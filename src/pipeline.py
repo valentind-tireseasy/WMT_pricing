@@ -35,6 +35,7 @@ def run_pipeline(
     save: bool = True,
     output_dir: str = None,
     margin_test_start_dates: list = None,
+    rollbacks_path: str = None,
     apply_rollbacks: bool = True,
     update_national_prices: bool = False,
     national_prices_path: str = None,
@@ -50,6 +51,8 @@ def run_pipeline(
         output_dir: Override output directory (for local testing).
         margin_test_start_dates: Filter margin tests by start dates
             (e.g. ["2026-03-12"]).
+        rollbacks_path: Full path to the approved rollbacks Excel file.
+            Changes monthly. If None, rollbacks are skipped.
         apply_rollbacks: If True, remove rollback SKUs from NLC and apply
             RB prices to national rows. Set False to skip.
         update_national_prices: If True, override national prices from
@@ -82,7 +85,7 @@ def run_pipeline(
         # ── Step 1-2: NLC Model ────────────────────────────────────────
         logger.info("Step 1-2: Running NLC Model...")
         model = NLCModel(date_str=date_str)
-        model.load_data(loader)
+        model.load_data(loader, rollbacks_path=rollbacks_path)
         df_output = model.run()
         logger.info("Model complete: %d SKU-Node rows", len(df_output))
 

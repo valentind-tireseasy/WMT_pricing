@@ -136,8 +136,16 @@ class NLCModel:
         self.df_sku_revenue = None
         self.df_sku_node_revenue = None
 
-    def load_data(self, loader):
-        """Load all required data sources via the DataLoader."""
+    def load_data(self, loader, rollbacks_path: str = None):
+        """Load all required data sources via the DataLoader.
+
+        Args:
+            loader: DataLoader instance.
+            rollbacks_path: Full path to the approved rollbacks Excel file.
+                The file changes monthly (e.g. ".../2026-01 RBs/Approved RBs/
+                Approved RBs start date 2026-02-01.xlsx"). If None, rollbacks
+                are skipped (df_rollbacks will be an empty DataFrame).
+        """
         from dateutil.relativedelta import relativedelta
 
         date = pd.to_datetime(self.date_str)
@@ -176,11 +184,22 @@ class NLCModel:
         self.df_cost_node = loader.load("shipping_costs_by_node")
 
         # --- Rollbacks ---
-        self.df_rollbacks = loader.load("rollbacks")
-        # Filter to active rollbacks (End date > today)
-        self.df_rollbacks = self.df_rollbacks[
-            self.df_rollbacks["End date"] > pd.to_datetime("today")
-        ].copy()
+        if rollbacks_path:
+            df_rollbacks_all = loader.load(
+                "rollbacks", rollbacks_path=rollbacks_path
+            )
+            # Filter to active rollbacks (End date > today)
+            self.df_rollbacks = df_rollbacks_all[
+                df_rollbacks_all["End date"] > pd.to_datetime("today")
+            ].copy()
+            logger.info(
+                "Rollbacks loaded: %d active (from %d total)",
+                len(self.df_rollbacks),
+                len(df_rollbacks_all),
+            )
+        else:
+            self.df_rollbacks = pd.DataFrame(columns=["Product Code", "End date", "Unit cost"])
+            logger.info("No rollbacks path provided — skipping rollbacks.")
 
         # --- Sales ---
         days_sales = self._config["days_sales"]

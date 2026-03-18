@@ -23,8 +23,8 @@ data_warehouse:
 
 # File paths on shared drives
 shared_paths:
-  pricing_dept: "H:\\Shared drives\\07_Finance\\07_10_Pricing_department\\07_11_01_WalmartB2B"
-  nlc_folder: "H:\\Shared drives\\07_Finance\\07_10_Pricing_department\\07_11_01_WalmartB2B\\07_10_01_01 Node level costs"
-  pricing_folder: "H:\\Shared drives\\07_Finance\\07_10_Pricing_department\\07_11_01_WalmartB2B\\07_10_01_02 Pricing"
-  rollbacks_folder: "H:\\Shared drives\\07_Finance\\07_10_Pricing_department\\07_11_01_WalmartB2B\\07_10_01_03 Rollbacks"
-  docs_folder: "H:\\Shared drives\\07_Finance\\07_10_Pricing_department\\07_11_01_WalmartB2B\\07_10_01_09 Documentation"
+  pricing_dept: "G:\\Shared drives\\07_Finance\\07_10_Pricing_department\\07_11_01_WalmartB2B"
+  nlc_folder: "G:\\Shared drives\\07_Finance\\07_10_Pricing_department\\07_11_01_WalmartB2B\\07_10_01_01 Node level costs"
+  pricing_folder: "G:\\Shared drives\\07_Finance\\07_10_Pricing_department\\07_11_01_WalmartB2B\\07_10_01_02 Pricing"
+  rollbacks_folder: "G:\\Shared drives\\07_Finance\\07_10_Pricing_department\\07_11_01_WalmartB2B\\07_10_01_03 Rollbacks"
+  docs_folder: "G:\\Shared drives\\07_Finance\\07_10_Pricing_department\\07_11_01_WalmartB2B\\07_10_01_09 Documentation"

@@ -122,7 +122,7 @@ sources:
   # --- Shipping costs by node ---
   shipping_costs_by_node:
     type: local
-    path: "H:\\Shared drives\\07_Finance\\07_10_Pricing_department\\07_11_01_WalmartB2B\\07_10_01_01 Node level costs\\Config files\\Costs to add by node.xlsx"
+    path: "G:\\Shared drives\\07_Finance\\07_10_Pricing_department\\07_11_01_WalmartB2B\\07_10_01_01 Node level costs\\Config files\\Costs to add by node.xlsx"
     usecols: ["Identifier", "Shipping cost"]
     dtype:
       Identifier: str
@@ -131,10 +131,12 @@ sources:
     used_by: [step1]
 
   # --- Rollbacks ---
-  # Filtered to active rollbacks (End date > today)
+  # Path changes monthly — must be passed as rollbacks_path parameter.
+  # Filtered to active rollbacks (End date > today) after loading.
+  # Example: "G:\...\07_10_01_03 Rollbacks\2026-01 RBs\Approved RBs\Approved RBs start date 2026-02-01.xlsx"
   rollbacks:
     type: local
-    path: "H:\\Shared drives\\07_Finance\\07_10_Pricing_department\\07_11_01_WalmartB2B\\07_10_01_03 Rollbacks\\{rollbacks_file}"
+    path: "{rollbacks_path}"
     description: "Approved rollback files — filter to End date > today for active rollbacks"
     dataframe: dfRollbacks
     used_by: [step1, step3]
@@ -142,7 +144,7 @@ sources:
   # --- Tests tracker ---
   tests_tracker:
     type: local
-    path: "H:\\Shared drives\\07_Finance\\07_10_Pricing_department\\07_11_01_WalmartB2B\\07_10_01_01 Node level costs\\Final node level costs tracker.csv"
+    path: "G:\\Shared drives\\07_Finance\\07_10_Pricing_department\\07_11_01_WalmartB2B\\07_10_01_01 Node level costs\\Final node level costs tracker.csv"
     dtype:
       Identifier: str
     description: "NLC tests tracker with all SKU-Node assignments and test history"
