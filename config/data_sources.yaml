@@ -13,6 +13,7 @@
 #   step2 = Rules & Tests (pricing rules, margin tests)
 #   step3 = DSV Generation (build new DSV file)
 #   step4 = Tracker Update (update tests tracker)
+#   step5 = Upload Validation (FTP response check)
 
 sources:
 
@@ -20,36 +21,46 @@ sources:
   # GOOGLE API SOURCES — Sheets & Drive
   # ============================================================
 
-  # --- Walmart DSV (current) ---
-  walmart_dsv_current:
+  # --- Walmart DSV folder (contains date-named CSV files) ---
+  # Files named like "DSV YYYY-MM-DD.csv" or "New WalmartB2B DSV to upload YYYY-MM-DD.csv"
+  # Read logic: list all files, parse date from name, pick max date
+  walmart_dsv_folder:
     type: folder
     id: "1piuawZRpppmoD-Qdkd1IUj3x4rs-LKny"
-    description: "Most recent Walmart DSV file (SKU, Price, Source columns)"
+    description: "Walmart DSV folder with date-named CSVs (SKU, Price, Source)"
     file_format: csv
+    read_cols: ["SKU", "Price", "Source"]
     dtype:
       SKU: str
       Price: float
       Source: str
+    column_renames:
+      SKU: sku
+      Price: walmart_dsv_price
+      Source: source
     dataframe: dfCurrDSVOriginal
     used_by: [step1, step3]
 
   # --- Warehouse node mapping ---
+  # Filtered to Channel=WalmartB2B, Warehouse Status=ENABLED,
+  # Identifier Status=ENABLED, Inventory Enabled=1
   warehouse_node_mapping:
     type: folder
     id: "1Y4drFI84j2eNQM_XTNb9nY9vBCngszZq"
-    description: "Warehouse node mapping (Identifier, Warehouse Code, etc.)"
+    description: "Warehouse node mapping (Identifier, Warehouse Code, Type, thresholds)"
     file_format: csv
     csv_separator: ";"
     dtype:
       Identifier: str
-    dataframe: dfWHnodeMapping
+    dataframe: dfWHnodeMappingAll
     used_by: [step1]
 
   # ============================================================
   # DATA WAREHOUSE SOURCES — SQL Queries
   # ============================================================
 
-  # --- Walmart Item Report (BuyBox / offer prices) ---
+  # --- Walmart Item Report (offer prices) ---
+  # Column renames: item_id -> Item ID, product_code -> Product Code
   dw_walmart_item_report:
     type: sql
     table: "pricing_tests.walmart_item_report"
@@ -59,11 +70,15 @@ sources:
       WHERE date = (SELECT MAX(date) FROM pricing_tests.walmart_item_report WHERE date <= '{date_str}')
         AND "1p_offer_status" = 'PUBLISHED'
     template_params: [date_str]
+    column_renames:
+      item_id: "Item ID"
+      product_code: "Product Code"
     description: "Walmart item report with offer prices (latest date, published items only)"
     dataframe: dfWmtItemReport
     used_by: [step1]
 
   # --- MAP prices ---
+  # Column renames: sku -> Product Code, map -> MAP
   dw_map_prices:
     type: sql
     table: "pricing_tests.map_prices"
@@ -73,23 +88,31 @@ sources:
       FROM pricing_tests.map_prices
       WHERE map_prices.date = (SELECT MAX(date) FROM pricing_tests.map_prices WHERE date <= '{date_str}')
     template_params: [date_str]
+    column_renames:
+      sku: "Product Code"
+      map: "MAP"
     description: "Minimum Advertised Price data"
     dataframe: dfMAP
     used_by: [step1]
 
-  # --- Walmart sales orders ---
+  # --- Walmart sales (node-level) ---
+  # Uses warehouse.vw_virtual_node_tracker (new_credentials=false for warehouse.* schema)
   dw_walmart_sales:
     type: sql
-    table: "pricing_tests.wmt_order"
+    table: "warehouse.vw_virtual_node_tracker"
+    new_credentials: false
     query: >
       SELECT order_id, sku, externalwarehouseid, order_date, supplier_id,
-             quantity, total_price
-      FROM pricing_tests.wmt_order
-      WHERE order_date >= '{start_date}'
-        AND order_date <= '{end_date}'
-    template_params: [start_date, end_date]
-    description: "Walmart B2B sales orders for specified date range"
-    dataframe: dfSales
+             quantity, total_inv_amount, profit, external_price, order_type
+      FROM warehouse.vw_virtual_node_tracker
+      WHERE shop = 'WalmartB2B'
+        AND order_type IN ('Sale')
+        AND orderstatus NOT IN ('WILL_CALL_NOT_PAID', 'CANCELLED_BEFORE_SHIPPING', 'ERROR')
+        AND order_date >= '{start_date}'
+        AND order_date < CURRENT_DATE
+    template_params: [start_date]
+    description: "Walmart B2B sales by SKU-Node for specified date range"
+    dataframe: dfSalesSKUNode
     used_by: [step1, step2]
 
   # ============================================================
@@ -100,6 +123,7 @@ sources:
   shipping_costs_by_node:
     type: local
     path: "H:\\Shared drives\\07_Finance\\07_10_Pricing_department\\07_11_01_WalmartB2B\\07_10_01_01 Node level costs\\Config files\\Costs to add by node.xlsx"
+    usecols: ["Identifier", "Shipping cost"]
     dtype:
       Identifier: str
     description: "Shipping cost additions per warehouse node"
@@ -107,10 +131,11 @@ sources:
     used_by: [step1]
 
   # --- Rollbacks ---
+  # Filtered to active rollbacks (End date > today)
   rollbacks:
     type: local
-    path_pattern: "H:\\Shared drives\\07_Finance\\07_10_Pricing_department\\07_11_01_WalmartB2B\\07_10_01_03 Rollbacks\\{year_month} RBs\\Approved RBs\\*.xlsx"
-    description: "Approved rollback files (SKUs with temporary price overrides)"
+    path: "H:\\Shared drives\\07_Finance\\07_10_Pricing_department\\07_11_01_WalmartB2B\\07_10_01_03 Rollbacks\\{rollbacks_file}"
+    description: "Approved rollback files — filter to End date > today for active rollbacks"
     dataframe: dfRollbacks
     used_by: [step1, step3]
 
@@ -118,6 +143,8 @@ sources:
   tests_tracker:
     type: local
     path: "H:\\Shared drives\\07_Finance\\07_10_Pricing_department\\07_11_01_WalmartB2B\\07_10_01_01 Node level costs\\Final node level costs tracker.csv"
+    dtype:
+      Identifier: str
     description: "NLC tests tracker with all SKU-Node assignments and test history"
     dataframe: dfCurrentTestsAll
     used_by: [step2, step3, step4]

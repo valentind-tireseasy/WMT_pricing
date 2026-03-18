@@ -1,8 +1,16 @@
 """DSV file builder for Walmart B2B.
 
 Takes the current DSV file, applies price updates (from rules engine),
-adds new SKU-Nodes, removes rollback SKUs, and generates the final
-DSV CSV file for upload via hybris.
+adds new SKU-Nodes, handles rollbacks, and generates the final DSV CSV.
+
+Matches the notebook's DSV construction flow (cells 192-215):
+1. Start from current DSV (renamed to SKU/Price/Source)
+2. Split into NLC (has Source) and National (no Source)
+3. Remove rollback SKUs from NLC rows
+4. Apply rollback prices to national rows
+5. Remove rows being updated, concat updates + new nodes
+6. Add "Minimum margin" column, deduplicate
+7. Save and validate
 """
 
 import logging
@@ -21,158 +29,191 @@ class DSVBuilder:
     """Build the new DSV file from current DSV + price updates.
 
     Usage:
-        builder = DSVBuilder(
-            df_current_dsv=df_current_dsv,
-            df_updates=df_updates,
-            df_new_nodes=df_new_nodes,
-            df_rollbacks=df_rollbacks,
-            today_str="2026-03-18",
+        builder = DSVBuilder(df_curr_dsv_original, df_rollbacks, today_str)
+        df_new_dsv = builder.build(
+            list_dsv_updates=[df_wm_split_dsv, df_margin_dsv, df_low_dsv, df_high_dsv],
+            df_new_nodes=df_new_nodes_dsv,
         )
-        df_new_dsv = builder.build()
         builder.save(df_new_dsv)
     """
 
-    def __init__(self, df_current_dsv: pd.DataFrame, df_updates: pd.DataFrame,
-                 df_new_nodes: pd.DataFrame, df_rollbacks: pd.DataFrame = None,
+    def __init__(self, df_curr_dsv_original: pd.DataFrame,
+                 df_rollbacks: pd.DataFrame = None,
                  today_str: str = None):
         self._config = load_yaml("nlc_model.yaml")
         self._settings = load_yaml("settings.yaml")
-        self.df_current_dsv = df_current_dsv
-        self.df_updates = df_updates
-        self.df_new_nodes = df_new_nodes
+        self.df_curr_dsv_original = df_curr_dsv_original
         self.df_rollbacks = df_rollbacks
         self.today_str = today_str or pd.to_datetime("today").strftime("%Y-%m-%d")
         self.minimum_margin = self._config["dsv"]["minimum_margin"]
 
-    def build(self) -> pd.DataFrame:
-        """Build the new DSV by applying all updates to the current DSV.
+    def build(self, list_dsv_updates: list, df_new_nodes: pd.DataFrame) -> pd.DataFrame:
+        """Build the new DSV by applying all updates.
+
+        Args:
+            list_dsv_updates: List of DSV-format DataFrames (each has SKU, Price, Source, SKU-Node)
+            df_new_nodes: New SKU-Node DSV DataFrame
 
         Returns:
-            DataFrame with columns: SKU, Price, Minimum margin, Source
+            Final DSV DataFrame with columns: SKU, Price, Minimum margin, Source
         """
-        original_rows = len(self.df_current_dsv)
-        logger.info("Building new DSV from %d original rows", original_rows)
-
-        # Prepare current DSV with SKU-Node key
-        df_start = self.df_current_dsv.copy()
-        if "sku" in df_start.columns and "SKU" not in df_start.columns:
-            df_start = df_start.rename(columns={
-                "sku": "SKU",
-                "walmart_dsv_price": "Price",
-                "source": "Source",
-            })
+        # Step 1: Prepare starting DSV
+        df_start = self.df_curr_dsv_original.copy()
+        df_start = df_start.rename(columns={
+            "sku": "SKU",
+            "walmart_dsv_price": "Price",
+            "source": "Source",
+        })
         df_start["SKU-Node"] = (
             df_start["SKU"] + "-" + df_start["Source"].fillna("").astype(str)
         )
 
-        # Handle rollbacks: remove rollback SKUs from NLC nodes (keep national)
+        original_rows = len(df_start)
+        logger.info("Starting DSV: %d rows", original_rows)
+
+        # Step 2: Split NLC vs National
+        df_nlc = df_start[df_start["Source"].notna()].copy()
+        df_national = df_start[df_start["Source"].isna()].copy()
+
+        # Step 3: Remove rollback SKUs from NLC rows
         if self.df_rollbacks is not None and len(self.df_rollbacks) > 0:
             rollback_skus = self.df_rollbacks["Product Code"].unique()
-            df_nlc = df_start[df_start["Source"].notna()].copy()
-            df_national = df_start[df_start["Source"].isna()].copy()
-
-            df_nlc_no_rbs = df_nlc[~df_nlc["SKU"].isin(rollback_skus)]
-            df_start = pd.concat([df_nlc_no_rbs, df_national], ignore_index=True)
-            df_start["SKU-Node"] = (
-                df_start["SKU"] + "-" + df_start["Source"].fillna("").astype(str)
+            before = len(df_nlc)
+            df_nlc = df_nlc[~df_nlc["SKU"].isin(rollback_skus)].copy()
+            logger.info(
+                "Removed %d rollback SKU rows from NLC nodes", before - len(df_nlc)
             )
-            logger.info("Removed %d rollback SKU rows from NLC nodes",
-                        original_rows - len(df_start))
 
-        # Remove rows that will be updated
-        update_nodes = set()
-        if self.df_updates is not None and len(self.df_updates) > 0:
-            update_nodes = set(self.df_updates["SKU-Node"].unique())
+            # Step 4: Apply rollback prices to national rows
+            df_rb_prices = (
+                self.df_rollbacks.groupby("Product Code")
+                .agg({"Unit cost": "min"})
+                .reset_index()
+                .rename(columns={"Product Code": "SKU", "Unit cost": "RB price"})
+            )
 
-        df_unchanged = df_start[~df_start["SKU-Node"].isin(update_nodes)].copy()
+            df_national = df_national.merge(df_rb_prices, how="left", on="SKU")
+            # Where we have a rollback price, use it
+            df_national["Price"] = np.where(
+                df_national["RB price"].isna(),
+                df_national["Price"],
+                df_national["RB price"],
+            )
+            df_national = df_national.drop(columns=["RB price"])
+
+        # Recombine NLC + National
+        df_start = pd.concat([df_nlc, df_national], ignore_index=True)
+        df_start["SKU-Node"] = (
+            df_start["SKU"] + "-" + df_start["Source"].fillna("").astype(str)
+        )
+
+        # Step 5: Concat all update DSVs
+        valid_updates = [
+            df for df in list_dsv_updates
+            if df is not None and len(df) > 0
+        ]
+        if valid_updates:
+            df_updates = pd.concat(valid_updates, ignore_index=True)
+        else:
+            df_updates = pd.DataFrame(columns=["SKU", "Price", "Source", "SKU-Node"])
+
+        rows_to_update = len(df_updates)
+        rows_to_add = len(df_new_nodes) if df_new_nodes is not None else 0
+        final_rows = original_rows + rows_to_add
+
+        logger.info(
+            "Original: %d | Updates: %d | New nodes: %d | Expected final: %d",
+            original_rows, rows_to_update, rows_to_add, final_rows,
+        )
+
+        # Remove rows that are being updated
+        df_unchanged = df_start[
+            ~df_start["SKU-Node"].isin(df_updates["SKU-Node"])
+        ].copy()
 
         # Concat: unchanged + updates + new nodes
-        parts = [df_unchanged]
-
-        if self.df_updates is not None and len(self.df_updates) > 0:
-            parts.append(self.df_updates[["SKU", "Price", "Source"]])
-
-        if self.df_new_nodes is not None and len(self.df_new_nodes) > 0:
-            parts.append(self.df_new_nodes[["SKU", "Price", "Source"]])
+        parts = [df_unchanged, df_updates]
+        if df_new_nodes is not None and len(df_new_nodes) > 0:
+            parts.append(df_new_nodes)
 
         df_new_dsv = pd.concat(parts, ignore_index=True)
+
+        # Drop SKU-Node helper column if present
+        if "SKU-Node" in df_new_dsv.columns:
+            df_new_dsv = df_new_dsv.drop(columns=["SKU-Node"])
 
         # Add minimum margin column
         df_new_dsv["Minimum margin"] = self.minimum_margin
 
-        # Final columns
+        # Final column order and deduplicate
         df_new_dsv = df_new_dsv[["SKU", "Price", "Minimum margin", "Source"]]
+        df_new_dsv = df_new_dsv.drop_duplicates()
 
-        logger.info(
-            "New DSV built: %d rows (was %d, updates=%d, new=%d)",
-            len(df_new_dsv),
-            original_rows,
-            len(self.df_updates) if self.df_updates is not None else 0,
-            len(self.df_new_nodes) if self.df_new_nodes is not None else 0,
-        )
-
+        logger.info("New DSV built: %d rows", len(df_new_dsv))
         return df_new_dsv
 
     def save(self, df_new_dsv: pd.DataFrame, output_path: str = None) -> str:
-        """Save the DSV to CSV.
-
-        Args:
-            df_new_dsv: The built DSV DataFrame.
-            output_path: Override output path. Defaults to shared drive location.
-
-        Returns:
-            The path the file was saved to.
-        """
+        """Save the DSV to CSV."""
         if output_path is None:
             nlc_folder = self._settings["shared_paths"]["nlc_folder"]
             dsv_folder = os.path.join(nlc_folder, "DSV Files")
             current_month = datetime.now().strftime("%Y-%m")
             month_folder = os.path.join(dsv_folder, current_month)
             os.makedirs(month_folder, exist_ok=True)
-            output_path = os.path.join(month_folder, f"DSV {self.today_str}.csv")
+
+            filename = self._config["dsv"]["output_filename_template"].format(
+                date_str=self.today_str
+            )
+            output_path = os.path.join(month_folder, filename)
 
         df_new_dsv.to_csv(output_path, index=False)
         logger.info("DSV saved to: %s", output_path)
         return output_path
 
-    def validate(self, df_new_dsv: pd.DataFrame) -> dict:
-        """Run validation checks on the new DSV.
+    def validate(self, df_new_dsv: pd.DataFrame) -> pd.DataFrame:
+        """Validate the new DSV against the original.
+
+        Computes per-row price changes and categorizes as Increase/Decrease/New/No change.
 
         Returns:
-            dict with check results (pass/fail + details)
+            DataFrame with change analysis
         """
-        checks = {}
+        df_new = df_new_dsv.copy()
+        df_new["Source"] = df_new["Source"].fillna("National")
+        df_new["SKU-Node"] = df_new["SKU"] + "-" + df_new["Source"]
 
-        # Check 1: No duplicate SKU-Nodes
-        df_check = df_new_dsv.copy()
-        df_check["Source"] = df_check["Source"].fillna("National")
-        df_check["SKU-Node"] = df_check["SKU"] + "-" + df_check["Source"]
-        dups = df_check["SKU-Node"].duplicated().sum()
-        checks["no_duplicate_sku_nodes"] = {
-            "pass": dups == 0,
-            "detail": f"{dups} duplicates found",
-        }
+        df_old = self.df_curr_dsv_original.copy()
+        df_old["source"] = df_old["source"].fillna("National")
+        df_old["SKU-Node"] = df_old["sku"] + "-" + df_old["source"]
 
-        # Check 2: No negative prices
-        neg = (df_new_dsv["Price"] <= 0).sum()
-        checks["no_negative_prices"] = {
-            "pass": neg == 0,
-            "detail": f"{neg} rows with price <= 0",
-        }
+        df_check = df_new.merge(
+            df_old[["SKU-Node", "walmart_dsv_price"]],
+            how="left",
+            on="SKU-Node",
+        )
+        df_check["Price change"] = round(
+            df_check["Price"] - df_check["walmart_dsv_price"], 2
+        )
+        df_check["Price change category"] = np.where(
+            df_check["Price change"] > 0,
+            "Increase",
+            np.where(
+                df_check["Price change"] < 0,
+                "Decrease",
+                np.where(
+                    df_check["walmart_dsv_price"].isna(),
+                    "New",
+                    "No change",
+                ),
+            ),
+        )
 
-        # Check 3: Row count within expected range
-        original = len(self.df_current_dsv)
-        new = len(df_new_dsv)
-        pct_change = abs(new - original) / original if original > 0 else 0
-        checks["row_count_reasonable"] = {
-            "pass": pct_change < 0.10,  # Less than 10% change
-            "detail": f"Original={original}, New={new}, Change={pct_change:.1%}",
-        }
+        # Log summary
+        changes = df_check[df_check["Price change"] != 0]
+        logger.info("DSV validation — changes: %d", len(changes))
+        logger.info(
+            "  %s",
+            df_check["Price change category"].value_counts().to_dict(),
+        )
 
-        all_pass = all(c["pass"] for c in checks.values())
-        logger.info("DSV validation: %s", "PASS" if all_pass else "FAIL")
-        for name, result in checks.items():
-            status = "PASS" if result["pass"] else "FAIL"
-            logger.info("  %s: %s — %s", name, status, result["detail"])
-
-        return checks
+        return df_check

@@ -1,14 +1,18 @@
 """Tests tracker updater for Walmart NLC pricing.
 
-Updates the 'Final node level costs tracker.csv' with new entries
-and refreshed margin/inventory data for existing entries.
+Updates the 'Final node level costs tracker.csv' with:
+- Refreshed margins and inventory status from model output
+- New entries (new SKU-Nodes, price updates, test updates)
+- Deduplication by Product Code + Identifier (keep last)
+
+Matches notebook cells 89 (margin update) and 217-218 (tracker save).
 """
 
 import logging
 import os
 import shutil
-from datetime import datetime
 
+import numpy as np
 import pandas as pd
 
 from src.adapters.module_loader import load_yaml
@@ -20,15 +24,15 @@ class TrackerUpdater:
     """Update the NLC tests tracker with price changes.
 
     Usage:
-        updater = TrackerUpdater(df_current_tracker, today_str="2026-03-18")
+        updater = TrackerUpdater(df_current_tests, today_str="2026-03-18")
         updater.update_margins(df_output)
-        updater.append_new_entries(df_tracker_updates)
+        updater.append_entries(list_tracker_dfs)
         updater.save()
     """
 
-    def __init__(self, df_current_tracker: pd.DataFrame, today_str: str = None):
+    def __init__(self, df_current_tests: pd.DataFrame, today_str: str = None):
         self._settings = load_yaml("settings.yaml")
-        self.df_tracker = df_current_tracker.copy()
+        self.df_tracker = df_current_tests.copy()
         self.today_str = today_str or pd.to_datetime("today").strftime("%Y-%m-%d")
         self._ensure_sku_node_key()
 
@@ -36,15 +40,20 @@ class TrackerUpdater:
         """Ensure SKU-Node column exists."""
         if "SKU-Node" not in self.df_tracker.columns:
             self.df_tracker["SKU-Node"] = (
-                self.df_tracker["Product Code"] + "-"
+                self.df_tracker["Product Code"]
+                + "-"
                 + self.df_tracker["Identifier"].astype(str)
             )
 
     def update_margins(self, df_output: pd.DataFrame):
-        """Update current NLC margin and inventory data from model output.
+        """Update margin columns from model output.
 
-        Args:
-            df_output: NLC model output DataFrame with margin calculations.
+        Matches notebook cell 89:
+        - Drops old margin columns
+        - Merges fresh values from df_output
+        - Sets current_nlc_margin_date to today
+        - Fills missing sku_sales_category with "No sales"
+        - Adds "Is in stock?" flag
         """
         update_cols = [
             "current_nlc_margin_date",
@@ -53,73 +62,95 @@ class TrackerUpdater:
             "sku_sales_category",
         ]
 
-        # Drop old values of update columns
-        existing_cols = [c for c in update_cols if c in self.df_tracker.columns]
-        if existing_cols:
-            self.df_tracker = self.df_tracker.drop(columns=existing_cols)
+        # Drop old values
+        existing = [c for c in update_cols if c in self.df_tracker.columns]
+        if existing:
+            self.df_tracker = self.df_tracker.drop(columns=existing)
 
-        # Merge fresh values from model output
-        merge_cols = ["SKU-Node"] + [c for c in update_cols if c in df_output.columns]
-        if len(merge_cols) > 1:
-            self.df_tracker = self.df_tracker.merge(
-                df_output[merge_cols], how="left", on="SKU-Node"
-            )
+        # Merge fresh values
+        merge_cols = ["SKU-Node"] + [
+            c for c in [
+                "current_nlc_margin",
+                "Current walmart margin at NLC category",
+                "sku_sales_category",
+            ]
+            if c in df_output.columns
+        ]
+        self.df_tracker = self.df_tracker.merge(
+            df_output[merge_cols], how="left", on="SKU-Node"
+        )
 
-        logger.info("Tracker margins updated from model output.")
+        self.df_tracker["current_nlc_margin_date"] = self.today_str
+        self.df_tracker["sku_sales_category"] = (
+            self.df_tracker["sku_sales_category"]
+            .astype(str)
+            .replace("nan", "No sales")
+        )
+        self.df_tracker["Is in stock?"] = np.where(
+            self.df_tracker["current_nlc_margin"].isna(), "No", "Yes"
+        )
 
-    def append_new_entries(self, df_new_entries: pd.DataFrame):
-        """Append new tracker rows (new SKU-Nodes + updated entries).
+        logger.info("Tracker margins updated.")
 
-        Existing SKU-Node rows with the same SKU-Node key get their
-        'Last price update' refreshed rather than being duplicated.
-        """
-        if df_new_entries is None or len(df_new_entries) == 0:
-            return
+    def append_entries(self, list_tracker_dfs: list):
+        """Append new/updated tracker entries.
 
-        # Ensure SKU-Node key
-        if "SKU-Node" not in df_new_entries.columns:
-            df_new_entries["SKU-Node"] = (
-                df_new_entries["Product Code"] + "-"
-                + df_new_entries["Identifier"].astype(str)
-            )
-
-        # Split: truly new vs existing
-        existing_nodes = set(self.df_tracker["SKU-Node"])
-        df_truly_new = df_new_entries[
-            ~df_new_entries["SKU-Node"].isin(existing_nodes)
-        ].copy()
-
-        df_existing_updates = df_new_entries[
-            df_new_entries["SKU-Node"].isin(existing_nodes)
-        ].copy()
-
-        # For existing: update the Last price update date
-        if len(df_existing_updates) > 0:
-            update_map = df_existing_updates.set_index("SKU-Node")[
-                "Last price update"
-            ].to_dict()
-            mask = self.df_tracker["SKU-Node"].isin(update_map)
-            self.df_tracker.loc[mask, "Last price update"] = (
-                self.df_tracker.loc[mask, "SKU-Node"].map(update_map)
-            )
-            logger.info("Updated %d existing tracker entries", len(df_existing_updates))
-
-        # For new: append
-        if len(df_truly_new) > 0:
-            self.df_tracker = pd.concat(
-                [self.df_tracker, df_truly_new], ignore_index=True
-            )
-            logger.info("Appended %d new tracker entries", len(df_truly_new))
-
-    def save(self, output_path: str = None, backup: bool = True) -> str:
-        """Save the tracker to CSV, with optional backup.
+        Matches notebook cell 217:
+        - Concatenates all tracker update DataFrames
+        - Removes existing rows for updated SKU-Nodes
+        - Appends new rows
+        - Deduplicates by Product Code + Identifier (keep last)
 
         Args:
-            output_path: Override path. Defaults to shared drive location.
-            backup: If True, save a backup copy before overwriting.
+            list_tracker_dfs: List of tracker-format DataFrames
+        """
+        valid = [df for df in list_tracker_dfs if df is not None and len(df) > 0]
+        if not valid:
+            logger.info("No tracker entries to append.")
+            return
 
-        Returns:
-            Path the tracker was saved to.
+        df_append = pd.concat(valid, ignore_index=True)
+
+        # Ensure SKU-Node key in append data
+        if "SKU-Node" not in df_append.columns:
+            df_append["SKU-Node"] = (
+                df_append["Product Code"]
+                + "-"
+                + df_append["Identifier"].astype(str)
+            )
+
+        # Remove existing rows that are being updated
+        df_not_updated = self.df_tracker[
+            ~self.df_tracker["SKU-Node"].isin(df_append["SKU-Node"])
+        ].copy()
+
+        self.df_tracker = pd.concat(
+            [df_not_updated, df_append], ignore_index=True
+        )
+
+        # Deduplicate
+        dups = self.df_tracker.duplicated(
+            subset=["Product Code", "Identifier"], keep=False
+        )
+        if dups.any():
+            logger.warning(
+                "Found %d duplicate rows in tracker, keeping last",
+                dups.sum(),
+            )
+            self.df_tracker = self.df_tracker.drop_duplicates(
+                subset=["Product Code", "Identifier"], keep="last"
+            )
+
+        # Drop helper column before save
+        if "SKU-Node" in self.df_tracker.columns:
+            self.df_tracker = self.df_tracker.drop(columns=["SKU-Node"])
+
+        logger.info("Tracker updated: %d total rows", len(self.df_tracker))
+
+    def save(self, output_path: str = None, backup: bool = True) -> str:
+        """Save the tracker to CSV with backup.
+
+        Matches notebook cell 218.
         """
         nlc_folder = self._settings["shared_paths"]["nlc_folder"]
 
@@ -128,14 +159,17 @@ class TrackerUpdater:
                 nlc_folder, "Final node level costs tracker.csv"
             )
 
-        if backup and os.path.exists(output_path):
-            bk_folder = os.path.join(nlc_folder, "Bk tracker")
-            os.makedirs(bk_folder, exist_ok=True)
-            bk_name = f"Final node level costs tracker_bk_{self.today_str}.csv"
-            bk_path = os.path.join(bk_folder, bk_name)
-            shutil.copy2(output_path, bk_path)
-            logger.info("Tracker backup saved: %s", bk_path)
-
+        # Save main tracker
         self.df_tracker.to_csv(output_path, index=False)
         logger.info("Tracker saved: %s (%d rows)", output_path, len(self.df_tracker))
+
+        # Save backup
+        if backup:
+            bk_folder = os.path.join(nlc_folder, "Bk tracker")
+            os.makedirs(bk_folder, exist_ok=True)
+            bk_name = f"Final node level costs tracker_{self.today_str}.csv"
+            bk_path = os.path.join(bk_folder, bk_name)
+            self.df_tracker.to_csv(bk_path, index=False)
+            logger.info("Tracker backup: %s", bk_path)
+
         return output_path
