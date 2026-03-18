@@ -4,9 +4,13 @@ Runs the full pipeline end-to-end, matching the notebook flow:
 1. Load data (DSV, inventory, sales, MAP, warehouse nodes, rollbacks, etc.)
 2. Run NLC model (two-pass: min_units=8 then min_units=4)
 3. Apply pricing rules (margin split, margin test, low/high updates, new nodes)
-4. Build new DSV (apply updates, handle rollbacks)
+4. Build new DSV (apply updates)
 5. Update tests tracker
 6. Save outputs (DSV CSV + tracker CSV + backup)
+
+Optional toggleable steps:
+- apply_rollbacks: Remove rollback SKUs from NLC + apply RB prices to national
+- update_national_prices: Override national prices from external Excel file
 
 Optional step 7: FTP validation (run separately, 3 hours after upload)
 """
@@ -31,6 +35,11 @@ def run_pipeline(
     save: bool = True,
     output_dir: str = None,
     margin_test_start_dates: list = None,
+    apply_rollbacks: bool = True,
+    update_national_prices: bool = False,
+    national_prices_path: str = None,
+    national_prices_sheet: str = "National prices",
+    national_prices_skip_rows: int = 2,
 ) -> dict:
     """Run the full Walmart NLC pricing pipeline.
 
@@ -41,24 +50,37 @@ def run_pipeline(
         output_dir: Override output directory (for local testing).
         margin_test_start_dates: Filter margin tests by start dates
             (e.g. ["2026-03-12"]).
+        apply_rollbacks: If True, remove rollback SKUs from NLC and apply
+            RB prices to national rows. Set False to skip.
+        update_national_prices: If True, override national prices from
+            an external Excel file. Requires national_prices_path.
+        national_prices_path: Path to the Excel file with new national prices.
+        national_prices_sheet: Sheet name in the national prices Excel file.
+        national_prices_skip_rows: Rows to skip in the national prices sheet.
 
     Returns:
         dict with keys: df_output, df_new_dsv, df_tracker, dsv_path,
-        tracker_path, validation
+        tracker_path, df_validation
     """
     if date_str is None:
         date_str = pd.to_datetime("today").strftime("%Y-%m-%d")
 
+    if update_national_prices and not national_prices_path:
+        raise ValueError(
+            "national_prices_path is required when update_national_prices=True"
+        )
+
     logger.info("=" * 70)
     logger.info("WALMART NLC PRICING PIPELINE")
-    logger.info("Date: %s | Test mode: %s", date_str, test)
+    logger.info("Date: %s | Test: %s | Rollbacks: %s | National prices: %s",
+                date_str, test, apply_rollbacks, update_national_prices)
     logger.info("=" * 70)
 
     loader = DataLoader()
 
     try:
         # ── Step 1-2: NLC Model ────────────────────────────────────────
-        logger.info("Step 1-2: Running NLC Model (data load + two-pass computation)...")
+        logger.info("Step 1-2: Running NLC Model...")
         model = NLCModel(date_str=date_str)
         model.load_data(loader)
         df_output = model.run()
@@ -70,21 +92,12 @@ def run_pipeline(
             df_output, model.df_current_tests, date_str, test_mode=test
         )
 
-        # 3a: Walmart margin split test
         df_wm_split_dsv, df_wm_split_tracker = engine.get_wm_margin_split_updates()
-
-        # 3b: Brand margin test
         df_margin_dsv, df_margin_tracker = engine.get_margin_test_updates(
             start_dates=margin_test_start_dates
         )
-
-        # 3c: Low price updates (margin < 5.9%)
         df_low_dsv, df_low_tracker = engine.get_low_price_updates()
-
-        # 3d: High price updates (margin > 20.3%)
         df_high_dsv, df_high_tracker = engine.get_high_price_updates()
-
-        # 3e: New SKU-Nodes
         df_new_dsv, df_new_tracker = engine.get_new_sku_nodes()
 
         logger.info("Rules complete.")
@@ -93,34 +106,49 @@ def run_pipeline(
         logger.info("Step 4: Building DSV file...")
         builder = DSVBuilder(
             df_curr_dsv_original=model.df_curr_dsv_original,
-            df_rollbacks=model.df_rollbacks,
             today_str=date_str,
         )
 
+        # Prepare base DSV, then apply optional steps
+        df_dsv_start = builder._prepare_starting_dsv()
+
+        if update_national_prices:
+            logger.info("  [Optional] Updating national prices from: %s",
+                        national_prices_path)
+            df_dsv_start = builder.apply_national_price_updates(
+                df_dsv_start,
+                national_prices_path=national_prices_path,
+                sheet_name=national_prices_sheet,
+                skip_rows=national_prices_skip_rows,
+            )
+        else:
+            logger.info("  [Skipped] Update national prices")
+
+        if apply_rollbacks:
+            logger.info("  [Optional] Applying rollbacks...")
+            df_dsv_start = builder.apply_rollbacks(
+                df_dsv_start, model.df_rollbacks
+            )
+        else:
+            logger.info("  [Skipped] Rollback handling")
+
         list_dsv_updates = [df_wm_split_dsv, df_margin_dsv, df_low_dsv, df_high_dsv]
-        df_new_dsv_final = builder.build(
+        df_new_dsv_final = builder.build_from(
+            df_dsv_start,
             list_dsv_updates=list_dsv_updates,
             df_new_nodes=df_new_dsv,
         )
 
-        # Validate
         df_validation = builder.validate(df_new_dsv_final)
 
         dsv_path = None
         if save:
-            dsv_path = builder.save(
-                df_new_dsv_final,
-                output_path=output_dir,
-            )
+            dsv_path = builder.save(df_new_dsv_final, output_path=output_dir)
 
         # ── Step 5: Update Tracker ─────────────────────────────────────
         logger.info("Step 5: Updating tests tracker...")
         updater = TrackerUpdater(model.df_current_tests, today_str=date_str)
-
-        # Update margins from model output
         updater.update_margins(df_output)
-
-        # Append all tracker entries
         updater.append_entries([
             df_new_tracker,
             df_low_tracker,
@@ -143,9 +171,7 @@ def run_pipeline(
         logger.info("  Low price updates:    %d", len(df_low_dsv))
         logger.info("  High price updates:   %d", len(df_high_dsv))
         logger.info("  New SKU-Nodes:        %d", len(df_new_dsv))
-        logger.info(
-            "  Tracker rows:         %d", len(updater.df_tracker)
-        )
+        logger.info("  Tracker rows:         %d", len(updater.df_tracker))
         if dsv_path:
             logger.info("  DSV saved:            %s", dsv_path)
         if tracker_path:
@@ -169,12 +195,6 @@ def run_ftp_validation(today_str: str = None) -> dict:
     """Run FTP response validation (separate from main pipeline).
 
     Call this ~3 hours after uploading the DSV via hybris.
-
-    Args:
-        today_str: Date to check responses for.
-
-    Returns:
-        dict with keys: df_results, report_path
     """
     from src.dsv.ftp_validator import FTPValidator
 
@@ -192,11 +212,3 @@ def run_ftp_validation(today_str: str = None) -> dict:
     report_path = validator.generate_report(df_results)
 
     return {"df_results": df_results, "report_path": report_path}
-
-
-if __name__ == "__main__":
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    )
-    result = run_pipeline()
