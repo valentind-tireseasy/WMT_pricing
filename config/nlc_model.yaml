@@ -1,0 +1,36 @@
+# WalmartPricing — Node Level Cost Model Parameters
+
+# Lookback window for data collection
+days_before: 7
+
+# Sales analysis window (days)
+days_sales: 90
+
+# Margin thresholds for NLC pricing
+margins:
+  min_margin_update: 0.059     # 5.9% — minimum margin for price updates
+  max_margin_update: 0.203     # 20.3% — maximum margin for price updates
+  min_wm_margin: 0.0           # Minimum Walmart margin for NLC eligibility
+  distance_map: 0.05           # 5% buffer above MAP
+
+# Margin targets for node level cost calculation
+margin_targets:
+  - 0.06    # 6% margin
+  - 0.11    # 11% margin
+  - 0.15    # 15% margin
+  - 0.20    # 20% margin
+
+# Inventory thresholds
+inventory:
+  min_units_default: 4         # Default minimum inventory units for NLC eligibility
+  min_units_alt: 8             # Alternative threshold (used for comparison)
+  metric_group: "min"          # Aggregation method for inventory (min/max/mean)
+
+# DSV file settings
+dsv:
+  minimum_margin: "4%"         # Minimum margin column value in DSV output
+
+# Safety thresholds (halt execution if breached)
+thresholds:
+  # Add threshold_increases, threshold_decreases, etc. from notebook params
+  # These will halt the pipeline if too many changes detected

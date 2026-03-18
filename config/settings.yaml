@@ -1,0 +1,30 @@
+# WalmartPricing — Global Settings
+
+# Path to shared Python modules on the network drive
+shared_modules_path: "G:\\Shared drives\\DevOps Projects\\Python projecs\\python-automations\\modules"
+
+# Output directory for generated files
+output_dir: "outputs/"
+
+# Logging level (DEBUG, INFO, WARNING, ERROR)
+log_level: "INFO"
+
+# Google API settings
+google_api:
+  # Seconds to sleep between API calls (rate limit protection)
+  rate_limit_sleep: 0.5
+  # Max retries for API calls
+  max_retries: 3
+
+# Data warehouse settings (connection details are in the shared module's credentials)
+data_warehouse:
+  # Query timeout in seconds
+  query_timeout: 120
+
+# File paths on shared drives
+shared_paths:
+  pricing_dept: "H:\\Shared drives\\07_Finance\\07_10_Pricing_department\\07_11_01_WalmartB2B"
+  nlc_folder: "H:\\Shared drives\\07_Finance\\07_10_Pricing_department\\07_11_01_WalmartB2B\\07_10_01_01 Node level costs"
+  pricing_folder: "H:\\Shared drives\\07_Finance\\07_10_Pricing_department\\07_11_01_WalmartB2B\\07_10_01_02 Pricing"
+  rollbacks_folder: "H:\\Shared drives\\07_Finance\\07_10_Pricing_department\\07_11_01_WalmartB2B\\07_10_01_03 Rollbacks"
+  docs_folder: "H:\\Shared drives\\07_Finance\\07_10_Pricing_department\\07_11_01_WalmartB2B\\07_10_01_09 Documentation"

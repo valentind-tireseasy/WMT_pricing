@@ -1,0 +1,123 @@
+# WalmartPricing — Data Source Configuration
+# Data sources used across the Walmart NLC pricing pipeline
+#
+# Source types:
+#   sheet      — Google Sheet (read via gAPI.get_df_of_file with "spreadsheet")
+#   sheets_api — Google Sheet via Sheets API (for native GSheets)
+#   folder     — Google Drive folder containing CSVs or Sheets
+#   sql        — Data warehouse SQL query (via DW.runQuery)
+#   local      — Local file (Excel/CSV from shared drive)
+#
+# Used-by tags reference pipeline steps:
+#   step1 = NLC Model (node level cost computation)
+#   step2 = Rules & Tests (pricing rules, margin tests)
+#   step3 = DSV Generation (build new DSV file)
+#   step4 = Tracker Update (update tests tracker)
+
+sources:
+
+  # ============================================================
+  # GOOGLE API SOURCES — Sheets & Drive
+  # ============================================================
+
+  # --- Walmart DSV (current) ---
+  walmart_dsv_current:
+    type: folder
+    id: "1piuawZRpppmoD-Qdkd1IUj3x4rs-LKny"
+    description: "Most recent Walmart DSV file (SKU, Price, Source columns)"
+    file_format: csv
+    dtype:
+      SKU: str
+      Price: float
+      Source: str
+    dataframe: dfCurrDSVOriginal
+    used_by: [step1, step3]
+
+  # --- Warehouse node mapping ---
+  warehouse_node_mapping:
+    type: folder
+    id: "1Y4drFI84j2eNQM_XTNb9nY9vBCngszZq"
+    description: "Warehouse node mapping (Identifier, Warehouse Code, etc.)"
+    file_format: csv
+    csv_separator: ";"
+    dtype:
+      Identifier: str
+    dataframe: dfWHnodeMapping
+    used_by: [step1]
+
+  # ============================================================
+  # DATA WAREHOUSE SOURCES — SQL Queries
+  # ============================================================
+
+  # --- Walmart Item Report (BuyBox / offer prices) ---
+  dw_walmart_item_report:
+    type: sql
+    table: "pricing_tests.walmart_item_report"
+    query: >
+      SELECT *
+      FROM pricing_tests.walmart_item_report
+      WHERE date = (SELECT MAX(date) FROM pricing_tests.walmart_item_report WHERE date <= '{date_str}')
+        AND "1p_offer_status" = 'PUBLISHED'
+    template_params: [date_str]
+    description: "Walmart item report with offer prices (latest date, published items only)"
+    dataframe: dfWmtItemReport
+    used_by: [step1]
+
+  # --- MAP prices ---
+  dw_map_prices:
+    type: sql
+    table: "pricing_tests.map_prices"
+    query: >
+      SELECT map_prices.sku,
+             map_prices.map
+      FROM pricing_tests.map_prices
+      WHERE map_prices.date = (SELECT MAX(date) FROM pricing_tests.map_prices WHERE date <= '{date_str}')
+    template_params: [date_str]
+    description: "Minimum Advertised Price data"
+    dataframe: dfMAP
+    used_by: [step1]
+
+  # --- Walmart sales orders ---
+  dw_walmart_sales:
+    type: sql
+    table: "pricing_tests.wmt_order"
+    query: >
+      SELECT order_id, sku, externalwarehouseid, order_date, supplier_id,
+             quantity, total_price
+      FROM pricing_tests.wmt_order
+      WHERE order_date >= '{start_date}'
+        AND order_date <= '{end_date}'
+    template_params: [start_date, end_date]
+    description: "Walmart B2B sales orders for specified date range"
+    dataframe: dfSales
+    used_by: [step1, step2]
+
+  # ============================================================
+  # LOCAL FILE SOURCES — Shared Drive
+  # ============================================================
+
+  # --- Shipping costs by node ---
+  shipping_costs_by_node:
+    type: local
+    path: "H:\\Shared drives\\07_Finance\\07_10_Pricing_department\\07_11_01_WalmartB2B\\07_10_01_01 Node level costs\\Config files\\Costs to add by node.xlsx"
+    dtype:
+      Identifier: str
+    description: "Shipping cost additions per warehouse node"
+    dataframe: dfCostNode
+    used_by: [step1]
+
+  # --- Rollbacks ---
+  rollbacks:
+    type: local
+    path_pattern: "H:\\Shared drives\\07_Finance\\07_10_Pricing_department\\07_11_01_WalmartB2B\\07_10_01_03 Rollbacks\\{year_month} RBs\\Approved RBs\\*.xlsx"
+    description: "Approved rollback files (SKUs with temporary price overrides)"
+    dataframe: dfRollbacks
+    used_by: [step1, step3]
+
+  # --- Tests tracker ---
+  tests_tracker:
+    type: local
+    path: "H:\\Shared drives\\07_Finance\\07_10_Pricing_department\\07_11_01_WalmartB2B\\07_10_01_01 Node level costs\\Final node level costs tracker.csv"
+    description: "NLC tests tracker with all SKU-Node assignments and test history"
+    dataframe: dfCurrentTestsAll
+    used_by: [step2, step3, step4]

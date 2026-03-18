@@ -1,0 +1,50 @@
+# WalmartPricing — Pricing Rules Configuration
+
+# Rule definitions for NLC price update categorization
+rules:
+
+  # New SKU-nodes: nodes appearing in inventory but not in current DSV
+  new_sku_nodes:
+    target_label: "Added"
+    description: "SKU-Node combinations not in the current tests tracker"
+
+  # Low price updates: current NLC margin too low, increase price to show inventory
+  low_price_updates:
+    target_label: "Normal strategy"
+    description: "SKU-Nodes where current margin is below threshold, price increase to correct profit"
+    margin_target: 0.06
+
+  # High price updates: current margin above threshold, decrease to target
+  high_price_updates:
+    target_label: "Normal strategy"
+    description: "SKU-Nodes where current margin is above 20%, decrease to 20% margin"
+    margin_target: 0.20
+
+  # Walmart margin split test
+  wm_margin_split:
+    target_label: "Wm margin split test"
+    description: "SKU-Nodes in the Walmart margin split test"
+    sub_groups:
+      - name: "60% split"
+        margin_split: 0.60
+      - name: "50% split"
+        margin_split: 0.50
+
+  # Brand margin test
+  margin_test:
+    target_label: "Margin test"
+    description: "SKU-Nodes in brand margin tests at specific % levels"
+    sub_groups:
+      - "11%"
+      - "12%"
+      - "13%"
+
+  # Less sales test
+  less_sales:
+    target_label: "Less sales"
+    description: "SKU-Nodes where sales have declined, price adjusted for volume"
+
+# Analysis thresholds
+analysis:
+  low_margin_threshold: 0.059
+  high_margin_threshold: 0.203
