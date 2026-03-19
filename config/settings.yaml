@@ -1,7 +1,11 @@
 # WalmartPricing — Global Settings
 
+# Drive letter where Google Shared Drives are mounted (no trailing slash).
+# Change this to match your machine (e.g. "G:" or "H:").
+shared_drive_letter: "G:"
+
 # Path to shared Python modules on the network drive
-shared_modules_path: "G:\\Shared drives\\DevOps Projects\\Python projecs\\python-automations\\modules"
+shared_modules_path: "{drive}\\Shared drives\\DevOps Projects\\Python projecs\\python-automations\\modules"
 
 # Output directory for generated files
 output_dir: "outputs/"
@@ -23,8 +27,8 @@ data_warehouse:
 
 # File paths on shared drives
 shared_paths:
-  pricing_dept: "G:\\Shared drives\\07_Finance\\07_10_Pricing_department\\07_11_01_WalmartB2B"
-  nlc_folder: "G:\\Shared drives\\07_Finance\\07_10_Pricing_department\\07_11_01_WalmartB2B\\07_10_01_01 Node level costs"
-  pricing_folder: "G:\\Shared drives\\07_Finance\\07_10_Pricing_department\\07_11_01_WalmartB2B\\07_10_01_02 Pricing"
-  rollbacks_folder: "G:\\Shared drives\\07_Finance\\07_10_Pricing_department\\07_11_01_WalmartB2B\\07_10_01_03 Rollbacks"
-  docs_folder: "G:\\Shared drives\\07_Finance\\07_10_Pricing_department\\07_11_01_WalmartB2B\\07_10_01_09 Documentation"
+  pricing_dept: "{drive}\\Shared drives\\07_Finance\\07_10_Pricing_department\\07_11_01_WalmartB2B"
+  nlc_folder: "{drive}\\Shared drives\\07_Finance\\07_10_Pricing_department\\07_11_01_WalmartB2B\\07_10_01_01 Node level costs"
+  pricing_folder: "{drive}\\Shared drives\\07_Finance\\07_10_Pricing_department\\07_11_01_WalmartB2B\\07_10_01_02 Pricing"
+  rollbacks_folder: "{drive}\\Shared drives\\07_Finance\\07_10_Pricing_department\\07_11_01_WalmartB2B\\07_10_01_03 Rollbacks"
+  docs_folder: "{drive}\\Shared drives\\07_Finance\\07_10_Pricing_department\\07_11_01_WalmartB2B\\07_10_01_09 Documentation"

@@ -9,6 +9,7 @@ Runs the full pipeline end-to-end, matching the notebook flow:
 6. Save outputs (DSV CSV + tracker CSV + backup)
 
 Optional toggleable steps:
+- run_inventory_check: Compare today vs yesterday inventory costs before pricing
 - apply_rollbacks: Remove rollback SKUs from NLC + apply RB prices to national
 - update_national_prices: Override national prices from external Excel file
 
@@ -36,6 +37,7 @@ def run_pipeline(
     output_dir: str = None,
     margin_test_start_dates: list = None,
     rollbacks_path: str = None,
+    run_inventory_check: bool = False,
     apply_rollbacks: bool = True,
     update_national_prices: bool = False,
     national_prices_path: str = None,
@@ -51,6 +53,8 @@ def run_pipeline(
         output_dir: Override output directory (for local testing).
         margin_test_start_dates: Filter margin tests by start dates
             (e.g. ["2026-03-12"]).
+        run_inventory_check: If True, compare today vs yesterday inventory
+            costs before running the NLC model. Diagnostic step.
         rollbacks_path: Full path to the approved rollbacks Excel file.
             Changes monthly. If None, rollbacks are skipped.
         apply_rollbacks: If True, remove rollback SKUs from NLC and apply
@@ -75,13 +79,25 @@ def run_pipeline(
 
     logger.info("=" * 70)
     logger.info("WALMART NLC PRICING PIPELINE")
-    logger.info("Date: %s | Test: %s | Rollbacks: %s | National prices: %s",
-                date_str, test, apply_rollbacks, update_national_prices)
+    logger.info("Date: %s | Test: %s | Inv check: %s | Rollbacks: %s | National prices: %s",
+                date_str, test, run_inventory_check, apply_rollbacks, update_national_prices)
     logger.info("=" * 70)
 
     loader = DataLoader()
 
+    inv_check_result = None
+
     try:
+        # ── [Optional] Inventory Check ────────────────────────────────
+        if run_inventory_check:
+            from src.data.inventory_checker import InventoryChecker
+
+            logger.info("Running inventory check: %s vs previous day...", date_str)
+            checker = InventoryChecker(date_current=date_str)
+            inv_check_result = checker.run()
+        else:
+            logger.info("[Skipped] Inventory check")
+
         # ── Step 1-2: NLC Model ────────────────────────────────────────
         logger.info("Step 1-2: Running NLC Model...")
         model = NLCModel(date_str=date_str)
@@ -182,6 +198,7 @@ def run_pipeline(
         logger.info("=" * 70)
 
         return {
+            "inv_check": inv_check_result,
             "df_output": df_output,
             "df_new_dsv": df_new_dsv_final,
             "df_tracker": updater.df_tracker,

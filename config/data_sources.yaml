@@ -122,7 +122,7 @@ sources:
   # --- Shipping costs by node ---
   shipping_costs_by_node:
     type: local
-    path: "G:\\Shared drives\\07_Finance\\07_10_Pricing_department\\07_11_01_WalmartB2B\\07_10_01_01 Node level costs\\Config files\\Costs to add by node.xlsx"
+    path: "{drive}\\Shared drives\\07_Finance\\07_10_Pricing_department\\07_11_01_WalmartB2B\\07_10_01_01 Node level costs\\Config files\\Costs to add by node.xlsx"
     usecols: ["Identifier", "Shipping cost"]
     dtype:
       Identifier: str
@@ -144,7 +144,7 @@ sources:
   # --- Tests tracker ---
   tests_tracker:
     type: local
-    path: "G:\\Shared drives\\07_Finance\\07_10_Pricing_department\\07_11_01_WalmartB2B\\07_10_01_01 Node level costs\\Final node level costs tracker.csv"
+    path: "{drive}\\Shared drives\\07_Finance\\07_10_Pricing_department\\07_11_01_WalmartB2B\\07_10_01_01 Node level costs\\Final node level costs tracker.csv"
     dtype:
       Identifier: str
     description: "NLC tests tracker with all SKU-Node assignments and test history"
