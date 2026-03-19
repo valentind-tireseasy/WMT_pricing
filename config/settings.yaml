@@ -2,7 +2,7 @@
 
 # Drive letter where Google Shared Drives are mounted (no trailing slash).
 # Change this to match your machine (e.g. "G:" or "H:").
-shared_drive_letter: "G:"
+shared_drive_letter: "H:"
 
 # Path to shared Python modules on the network drive
 shared_modules_path: "{drive}\\Shared drives\\DevOps Projects\\Python projecs\\python-automations\\modules"
