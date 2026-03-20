@@ -28,5 +28,8 @@ lxml>=4.9
 # IPython (required by Google module)
 ipython>=8.0
 
+# Slack notifications
+slack-sdk>=3.21
+
 # Testing
 pytest>=7.4

@@ -26,6 +26,7 @@ from src.rules.pricing_rules import PricingRulesEngine
 from src.dsv.dsv_builder import DSVBuilder
 from src.tracker.tracker_updater import TrackerUpdater
 from src.adapters.module_loader import load_yaml
+from src.notifications.slack_notifier import SlackNotifier
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +44,8 @@ def run_pipeline(
     national_prices_path: str = None,
     national_prices_sheet: str = "National prices",
     national_prices_skip_rows: int = 2,
+    slack_channel: str = "bot-test",
+    slack_enabled: bool = True,
 ) -> dict:
     """Run the full Walmart NLC pricing pipeline.
 
@@ -64,6 +67,8 @@ def run_pipeline(
         national_prices_path: Path to the Excel file with new national prices.
         national_prices_sheet: Sheet name in the national prices Excel file.
         national_prices_skip_rows: Rows to skip in the national prices sheet.
+        slack_channel: Slack channel to post notifications to.
+        slack_enabled: If False, skip all Slack notifications.
 
     Returns:
         dict with keys: df_output, df_new_dsv, df_tracker, dsv_path,
@@ -83,6 +88,15 @@ def run_pipeline(
                 date_str, test, run_inventory_check, apply_rollbacks, update_national_prices)
     logger.info("=" * 70)
 
+    slack = SlackNotifier(channel=slack_channel, enabled=slack_enabled)
+    slack.notify_pipeline_start(date_str, {
+        "test": test,
+        "inventory_check": run_inventory_check,
+        "apply_rollbacks": apply_rollbacks,
+        "update_national_prices": update_national_prices,
+        "save": save,
+    })
+
     loader = DataLoader()
 
     inv_check_result = None
@@ -95,8 +109,10 @@ def run_pipeline(
             logger.info("Running inventory check: %s vs previous day...", date_str)
             checker = InventoryChecker(date_current=date_str)
             inv_check_result = checker.run()
+            slack.notify_inventory_check(inv_check_result, date_str)
         else:
             logger.info("[Skipped] Inventory check")
+            slack.notify_inventory_check_skipped()
 
         # ── Step 1-2: NLC Model ────────────────────────────────────────
         logger.info("Step 1-2: Running NLC Model...")
@@ -104,6 +120,7 @@ def run_pipeline(
         model.load_data(loader, rollbacks_path=rollbacks_path)
         df_output = model.run()
         logger.info("Model complete: %d SKU-Node rows", len(df_output))
+        slack.notify_nlc_model(len(df_output))
 
         # ── Step 3: Pricing Rules ──────────────────────────────────────
         logger.info("Step 3: Applying pricing rules...")
@@ -120,6 +137,13 @@ def run_pipeline(
         df_new_dsv, df_new_tracker = engine.get_new_sku_nodes()
 
         logger.info("Rules complete.")
+        slack.notify_pricing_rules({
+            "Wm margin split": len(df_wm_split_dsv),
+            "Margin test": len(df_margin_dsv),
+            "Low price updates": len(df_low_dsv),
+            "High price updates": len(df_high_dsv),
+            "New SKU-Nodes": len(df_new_dsv),
+        })
 
         # ── Step 4: Build DSV ──────────────────────────────────────────
         logger.info("Step 4: Building DSV file...")
@@ -142,14 +166,21 @@ def run_pipeline(
             )
         else:
             logger.info("  [Skipped] Update national prices")
+        slack.notify_national_prices(applied=update_national_prices)
 
         if apply_rollbacks:
             logger.info("  [Optional] Applying rollbacks...")
             df_dsv_start = builder.apply_rollbacks(
                 df_dsv_start, model.df_rollbacks
             )
+            slack.notify_rollbacks(
+                applied=True,
+                n_rollbacks=len(model.df_rollbacks),
+                n_skus=model.df_rollbacks["Product Code"].nunique(),
+            )
         else:
             logger.info("  [Skipped] Rollback handling")
+            slack.notify_rollbacks(applied=False)
 
         list_dsv_updates = [df_wm_split_dsv, df_margin_dsv, df_low_dsv, df_high_dsv]
         df_new_dsv_final = builder.build_from(
@@ -159,6 +190,11 @@ def run_pipeline(
         )
 
         df_validation = builder.validate(df_new_dsv_final)
+        validation_counts = (
+            df_validation["Price change category"].value_counts().to_dict()
+            if df_validation is not None else {}
+        )
+        slack.notify_dsv_build(len(df_new_dsv_final), validation_counts)
 
         dsv_path = None
         if save:
@@ -175,10 +211,17 @@ def run_pipeline(
             df_wm_split_tracker,
             df_margin_tracker,
         ])
+        slack.notify_tracker_update(len(updater.df_tracker))
 
         tracker_path = None
         if save:
             tracker_path = updater.save()
+
+        # ── Save notification ──────────────────────────────────────────
+        if save:
+            slack.notify_save(dsv_path=dsv_path, tracker_path=tracker_path)
+        else:
+            slack.notify_save(skipped=True)
 
         # ── Summary ────────────────────────────────────────────────────
         logger.info("=" * 70)
@@ -197,6 +240,20 @@ def run_pipeline(
             logger.info("  Tracker saved:        %s", tracker_path)
         logger.info("=" * 70)
 
+        summary = {
+            "nlc_rows": len(df_output),
+            "dsv_rows": len(df_new_dsv_final),
+            "wm_split": len(df_wm_split_dsv),
+            "margin_test": len(df_margin_dsv),
+            "low_price": len(df_low_dsv),
+            "high_price": len(df_high_dsv),
+            "new_nodes": len(df_new_dsv),
+            "tracker_rows": len(updater.df_tracker),
+            "dsv_path": dsv_path,
+            "tracker_path": tracker_path,
+        }
+        slack.notify_pipeline_complete(summary)
+
         return {
             "inv_check": inv_check_result,
             "df_output": df_output,
@@ -207,11 +264,19 @@ def run_pipeline(
             "tracker_path": tracker_path,
         }
 
+    except Exception as e:
+        slack.notify_error("pipeline", e)
+        raise
+
     finally:
         loader.close()
 
 
-def run_ftp_validation(today_str: str = None) -> dict:
+def run_ftp_validation(
+    today_str: str = None,
+    slack_channel: str = "bot-test",
+    slack_enabled: bool = True,
+) -> dict:
     """Run FTP response validation (separate from main pipeline).
 
     Call this ~3 hours after uploading the DSV via hybris.
@@ -221,14 +286,18 @@ def run_ftp_validation(today_str: str = None) -> dict:
     if today_str is None:
         today_str = pd.to_datetime("today").strftime("%Y-%m-%d")
 
+    slack = SlackNotifier(channel=slack_channel, enabled=slack_enabled)
+
     validator = FTPValidator(today_str=today_str)
     n_files = validator.download_responses()
 
     if n_files == 0:
         logger.warning("No response files found. Upload may not have completed yet.")
+        slack.notify_ftp_validation(0)
         return {"df_results": pd.DataFrame(), "report_path": None}
 
     df_results = validator.parse_responses()
     report_path = validator.generate_report(df_results)
+    slack.notify_ftp_validation(n_files, df_results, report_path)
 
     return {"df_results": df_results, "report_path": report_path}
