@@ -57,13 +57,21 @@ class SlackNotifier:
         )
 
     def notify_inventory_check(self, inv_check_result: dict, date_str: str):
-        """Post a detailed inventory check summary to Slack."""
+        """Post a detailed inventory check summary to Slack.
+
+        Posts 4 breakdown tables (top 5 each):
+        1. Increases by brand
+        2. Decreases by brand
+        3. Increases by vendor
+        4. Decreases by vendor
+        """
         df_summary = inv_check_result["df_summary"]
-        df_vendor = inv_check_result["df_vendor_detail"]
+
+        prev_date = inv_check_result.get("date_previous", "previous day")
 
         # Build summary table
         lines = ["*Inventory Cost Comparison*"]
-        lines.append(f"Date: `{date_str}` vs previous day\n")
+        lines.append(f"Date: `{date_str}` vs `{prev_date}`\n")
         lines.append("```")
         lines.append(f"{'Category':<25} {'Count SKU-Whs':>15} {'Avg Change %':>15}")
         lines.append("-" * 57)
@@ -74,31 +82,44 @@ class SlackNotifier:
             lines.append(f"{cat:<25} {count:>15} {avg:>15}")
         lines.append("```")
 
-        # Vendor breakdown
-        if len(df_vendor) > 0:
-            lines.append("\n*Vendor Breakdown (Increases, 1000+ lines)*")
-            lines.append("```")
-            lines.append(
-                f"{'Vendor':<12} {'# Increases':>12} {'Avg Incr %':>12} "
+        self._post("\n".join(lines))
+
+        # Post 4 breakdown tables
+        breakdown_configs = [
+            ("Brand Increases (Top 5)", inv_check_result.get("df_brand_increases"), "Brand code", "Increase"),
+            ("Brand Decreases (Top 5)", inv_check_result.get("df_brand_decreases"), "Brand code", "Decrease"),
+            ("Vendor Increases (Top 5)", inv_check_result.get("df_vendor_increases"), "Vendor", "Increase"),
+            ("Vendor Decreases (Top 5)", inv_check_result.get("df_vendor_decreases"), "Vendor", "Decrease"),
+        ]
+
+        for title, df, group_label, category in breakdown_configs:
+            if df is None or len(df) == 0:
+                self._post(f"*{title}*\n_No {category.lower()}s above threshold._")
+                continue
+
+            count_col = f"Count of wh-sku price {category}"
+            avg_col = f"Avg price {category} %"
+            pct_col = f"% Lines {category}"
+            group_col = "Brand code" if "Brand" in group_label else "vendor_code"
+
+            tbl = [f"*{title}*"]
+            tbl.append("```")
+            tbl.append(
+                f"{group_label:<12} {'# ' + category:>12} {'Avg %':>10} "
                 f"{'Total Lines':>12} {'% Lines':>10}"
             )
-            lines.append("-" * 60)
-            for _, row in df_vendor.head(15).iterrows():
-                vendor = str(row["vendor_code"])[:12]
-                count = f"{int(row['Count of wh-sku price Increase']):,}"
-                avg = f"{row['Avg price Increase %']:.1%}"
+            tbl.append("-" * 58)
+            for _, row in df.head(5).iterrows():
+                name = str(row[group_col])[:12]
+                count = f"{int(row[count_col]):,}"
+                avg = f"{row[avg_col]:.1%}"
                 total = f"{int(row['Total wh-sku lines']):,}"
-                pct = f"{row['% Lines Increase']:.1%}"
-                lines.append(
-                    f"{vendor:<12} {count:>12} {avg:>12} {total:>12} {pct:>10}"
+                pct = f"{row[pct_col]:.1%}"
+                tbl.append(
+                    f"{name:<12} {count:>12} {avg:>10} {total:>12} {pct:>10}"
                 )
-            if len(df_vendor) > 15:
-                lines.append(f"  ... and {len(df_vendor) - 15} more vendors")
-            lines.append("```")
-        else:
-            lines.append("\n_No vendor increases above threshold._")
-
-        self._post("\n".join(lines))
+            tbl.append("```")
+            self._post("\n".join(tbl))
 
     def notify_inventory_check_skipped(self):
         pass
@@ -165,6 +186,16 @@ class SlackNotifier:
             self._post(":white_check_mark: *Hybris Upload* — Successful")
         else:
             self._post(":x: *Hybris Upload* — Failed or timed out")
+
+    def notify_dsv_archive(self, dest_path: str = None, error: str = None):
+        """Post DSV archive copy result."""
+        if dest_path:
+            self._post(
+                f":white_check_mark: *DSV Archived* — Copied to shared drive\n"
+                f"  `{dest_path}`"
+            )
+        elif error:
+            self._post(f":x: *DSV Archive Failed* — {error}")
 
     def notify_pipeline_complete(self, summary: dict):
         """Post final pipeline summary."""

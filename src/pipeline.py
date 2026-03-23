@@ -200,6 +200,10 @@ def run_pipeline(
         if save:
             dsv_path = builder.save(df_new_dsv_final, output_path=output_dir)
 
+            # Record last run date for inventory check comparison
+            from src.data.inventory_checker import save_last_run_date
+            save_last_run_date(date_str)
+
         # ── Step 5: Update Tracker ─────────────────────────────────────
         logger.info("Step 5: Updating tests tracker...")
         updater = TrackerUpdater(model.df_current_tests, today_str=date_str)

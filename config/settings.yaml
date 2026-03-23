@@ -32,3 +32,4 @@ shared_paths:
   pricing_folder: "{drive}\\Shared drives\\07_Finance\\07_10_Pricing_department\\07_11_01_WalmartB2B\\07_10_01_02 Pricing"
   rollbacks_folder: "{drive}\\Shared drives\\07_Finance\\07_10_Pricing_department\\07_11_01_WalmartB2B\\07_10_01_03 Rollbacks"
   docs_folder: "{drive}\\Shared drives\\07_Finance\\07_10_Pricing_department\\07_11_01_WalmartB2B\\07_10_01_09 Documentation"
+  dsv_archive_folder: "{drive}\\Shared drives\\06_Data_Management\\06_01_Reports\\DSV Prices\\WalmartB2B"

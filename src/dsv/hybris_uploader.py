@@ -21,6 +21,7 @@ NOTE: hybris requires Selenium/Chrome — only import this module when needed
 
 import logging
 import os
+import shutil
 import time
 
 from src.adapters.module_loader import ensure_modules_path, load_yaml
@@ -32,7 +33,7 @@ WALMART_CHANNEL = "WalmartB2B - EXTERNAL_WAREHOUSE"
 
 # Time to wait for the upload to process (hybris processes take ~40 minutes
 # based on the history table timestamps, but the page updates faster)
-UPLOAD_POLL_INTERVAL = 30   # seconds between status checks
+UPLOAD_POLL_INTERVAL = 300  # seconds between status checks (5 minutes)
 UPLOAD_TIMEOUT = 3600       # 1 hour max wait
 
 
@@ -282,3 +283,33 @@ class HybrisUploader:
             self._driver.quit()
             self._driver = None
             logger.info("Hybris browser closed.")
+
+
+def copy_dsv_to_archive(dsv_path: str) -> str:
+    """Copy the uploaded DSV file to the shared drive archive folder.
+
+    Reads the target folder from config/settings.yaml → shared_paths.dsv_archive_folder.
+
+    Args:
+        dsv_path: Absolute path to the DSV file that was uploaded.
+
+    Returns:
+        The destination path where the file was copied.
+
+    Raises:
+        FileNotFoundError: If the DSV file or archive folder doesn't exist.
+    """
+    if not os.path.isfile(dsv_path):
+        raise FileNotFoundError(f"DSV file not found: {dsv_path}")
+
+    settings = load_yaml("settings.yaml")
+    archive_folder = settings["shared_paths"]["dsv_archive_folder"]
+
+    if not os.path.isdir(archive_folder):
+        os.makedirs(archive_folder, exist_ok=True)
+        logger.info("Created archive folder: %s", archive_folder)
+
+    dest_path = os.path.join(archive_folder, os.path.basename(dsv_path))
+    shutil.copy2(dsv_path, dest_path)
+    logger.info("DSV copied to archive: %s", dest_path)
+    return dest_path

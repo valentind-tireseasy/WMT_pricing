@@ -7,6 +7,7 @@ significantly before running the pricing update.
 """
 
 import logging
+import os
 
 import numpy as np
 import pandas as pd
@@ -15,6 +16,32 @@ from src.adapters.module_loader import ensure_modules_path
 
 logger = logging.getLogger(__name__)
 
+# Default location for the last-run state file (project root)
+_PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+LAST_RUN_FILE = os.path.join(_PROJECT_ROOT, "last_run.txt")
+
+
+def get_last_run_date() -> str | None:
+    """Read the last pipeline run date from last_run.txt.
+
+    Returns:
+        Date string (YYYY-MM-DD) or None if the file doesn't exist.
+    """
+    if os.path.isfile(LAST_RUN_FILE):
+        with open(LAST_RUN_FILE, "r") as f:
+            date_str = f.read().strip()
+        if date_str:
+            logger.info("Last run date from %s: %s", LAST_RUN_FILE, date_str)
+            return date_str
+    return None
+
+
+def save_last_run_date(date_str: str):
+    """Write the current run date to last_run.txt."""
+    with open(LAST_RUN_FILE, "w") as f:
+        f.write(date_str)
+    logger.info("Saved last run date to %s: %s", LAST_RUN_FILE, date_str)
+
 
 class InventoryChecker:
     """Compare two inventory snapshots and produce delta summaries.
@@ -22,14 +49,26 @@ class InventoryChecker:
     Args:
         date_current: Date string (YYYY-MM-DD) for the current snapshot.
         date_previous: Date string (YYYY-MM-DD) for the previous snapshot.
-            Defaults to the day before date_current.
+            Defaults to the last pipeline run date from last_run.txt,
+            or the day before date_current if no state file exists.
     """
 
     def __init__(self, date_current: str, date_previous: str = None):
         self.date_current = date_current
         if date_previous is None:
-            prev = pd.to_datetime(date_current) - pd.Timedelta(days=1)
-            self.date_previous = prev.strftime("%Y-%m-%d")
+            last_run = get_last_run_date()
+            if last_run and last_run != date_current:
+                self.date_previous = last_run
+                logger.info(
+                    "Using last run date as previous: %s", self.date_previous
+                )
+            else:
+                prev = pd.to_datetime(date_current) - pd.Timedelta(days=1)
+                self.date_previous = prev.strftime("%Y-%m-%d")
+                logger.info(
+                    "No last run date found, falling back to previous day: %s",
+                    self.date_previous,
+                )
         else:
             self.date_previous = date_previous
 
@@ -45,15 +84,35 @@ class InventoryChecker:
                 to appear in the detail breakdown. Default 1000.
 
         Returns:
-            dict with keys: df_inv_comp, df_summary, df_vendor_detail
+            dict with keys: df_inv_comp, df_summary, and 4 breakdown dfs:
+            df_vendor_increases, df_vendor_decreases,
+            df_brand_increases, df_brand_decreases
         """
         df_current, df_previous = self._load_snapshots()
         df_vendor = self._load_vendor_codes()
         self.df_inv_comp = self._compare(df_current, df_previous, df_vendor)
         self.df_summary = self._summarize(self.df_inv_comp)
-        self.df_vendor_detail = self._vendor_breakdown(
-            self.df_inv_comp, min_lines=min_lines
+
+        # 4 breakdowns: vendor/brand × increases/decreases
+        self.df_vendor_increases = self._vendor_breakdown(
+            self.df_inv_comp, category="Increase", group_col="vendor_code",
+            min_lines=min_lines,
         )
+        self.df_vendor_decreases = self._vendor_breakdown(
+            self.df_inv_comp, category="Decrease", group_col="vendor_code",
+            min_lines=min_lines,
+        )
+        self.df_brand_increases = self._vendor_breakdown(
+            self.df_inv_comp, category="Increase", group_col="Brand code",
+            min_lines=min_lines,
+        )
+        self.df_brand_decreases = self._vendor_breakdown(
+            self.df_inv_comp, category="Decrease", group_col="Brand code",
+            min_lines=min_lines,
+        )
+
+        # Keep legacy key for backward compat
+        self.df_vendor_detail = self.df_vendor_increases
 
         logger.info(
             "Inventory check complete: %d SKU-Warehouse pairs compared",
@@ -63,6 +122,11 @@ class InventoryChecker:
             "df_inv_comp": self.df_inv_comp,
             "df_summary": self.df_summary,
             "df_vendor_detail": self.df_vendor_detail,
+            "df_vendor_increases": self.df_vendor_increases,
+            "df_vendor_decreases": self.df_vendor_decreases,
+            "df_brand_increases": self.df_brand_increases,
+            "df_brand_decreases": self.df_brand_decreases,
+            "date_previous": self.date_previous,
         }
 
     def _load_snapshots(self):
