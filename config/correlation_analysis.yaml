@@ -1,0 +1,140 @@
+# WalmartPricing -- Correlation Analysis Configuration
+
+# --- Data preparation ---
+data_prep:
+  analysis_days: 30
+  top_sku_pct: 0.90
+  sku_sales_lookback_days: 60
+  rolling_window: 7
+  inventory_sample_freq: "4D"
+  rolling_cols:
+    - qty_sold
+    - te_margin
+    - cost_to_walmart
+    - offer_price
+    - walmart_margin
+
+# --- Confidence intervals (global defaults) ---
+ci:
+  level: 0.95
+  n_bootstrap: 1000        # reduced from 2000 for performance on 1.3M rows
+  n_bootstrap_corr: 500    # lighter bootstrap for correlation matrix (~30 features)
+  seed: 42
+
+# --- EDA ---
+eda:
+  correlation_method: "spearman"
+  target_col: "qty_sold"
+  top_n_correlations: 15
+  top_n_scatter: 6
+  exclude_cols:
+    - day_of_week
+  distribution_cols:
+    - qty_sold
+    - walmart_margin
+    - te_margin
+    - cost_to_walmart
+    - days_since_price_change
+
+# --- Statistical tests ---
+statistical_tests:
+  price_change:
+    days_recent: 3
+    days_no_change: 7
+  margin_deciles:
+    n_quantiles: 10
+    margin_cols:
+      - te_margin
+      - walmart_margin
+  ols:
+    feature_cols:
+      - cost_to_walmart
+      - offer_price
+      - walmart_margin
+      - te_margin
+      - can_show_inv
+      - shipping_cost
+      - n_active_nodes
+      - day_of_week
+      - days_since_price_change
+
+# --- Elasticity ---
+elasticity:
+  price_col: "offer_price"
+  qty_col: "qty_sold"
+  min_obs_state: 50
+  min_obs_brand_state: 30
+  min_obs_brand: 30
+  min_obs_city: 30
+  min_brand_state_for_city: 200
+  top_n_brands: 15
+  top_n_states: 15
+  seasonal_n_periods: 3
+
+# --- Difference-in-Differences ---
+did:
+  treatment_col: "cost_to_walmart_vs_7d"
+  max_controls_per_brand: 5
+  pre_window_days: 7
+  post_window_days: 14
+  min_event_buffer_days: 14
+  dimensions:
+    - brand
+    - price_tier
+    - State
+    - is_MAP_tire
+  top_n_per_dimension: 10
+  min_obs: 50
+
+# --- Segmented analysis ---
+segmented:
+  min_obs: 30
+  compare_cols:
+    - qty_sold
+    - revenue
+    - te_margin
+    - walmart_margin
+    - cost_to_walmart
+    - offer_price
+  tire_diameter_bins: [0, 15, 17, 19, 22, 100]
+  tire_diameter_labels:
+    - '<=15"'
+    - '16-17"'
+    - '18-19"'
+    - '20-22"'
+    - '23"+'
+
+# --- Optimization ---
+optimization:
+  margin_bounds: [-0.5, 0.8]
+  margin_cols:
+    - te_margin
+    - walmart_margin
+  optimal_range: [-0.1, 0.5]
+  min_obs: 50
+  top_n_brands: 20
+
+# --- Simulation ---
+simulation:
+  pct_changes_start: -0.05
+  pct_changes_end: 0.06
+  pct_changes_step: 0.01
+  min_obs_brand: 30
+  top_elastic_brands: 5
+  top_inelastic_brands: 5
+
+# --- Strategy ---
+strategy:
+  confidence_threshold: 0.05
+  high_confidence_min_n: 200
+  medium_confidence_min_n: 50
+  elastic_threshold: -0.8
+  inelastic_threshold: -0.3
+  max_recommended_change: 0.05
+  top_n_recommendations: 10
+
+# --- Output ---
+output:
+  format: "parquet"
+  fallback_format: "csv"
+  filename_template: "correlation_dataset_{end_date}"
