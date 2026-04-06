@@ -36,6 +36,7 @@ class AnalysisDataPrep:
         loader: DataLoader = None,
         config: dict = None,
         rollbacks_path: str = None,
+        rollbacks_exclude_start_date: str = None,
         warehouse_addresses_path: str = None,
     ):
         self.end_date = end_date
@@ -43,6 +44,7 @@ class AnalysisDataPrep:
         self.cfg = (config or load_analysis_config())["data_prep"]
         self.nlc_config = load_yaml("nlc_model.yaml")
         self.rollbacks_path = rollbacks_path
+        self.rollbacks_exclude_start_date = rollbacks_exclude_start_date
         self.warehouse_addresses_path = warehouse_addresses_path
 
         # Derived dates
@@ -150,8 +152,16 @@ class AnalysisDataPrep:
                 "rollbacks", rollbacks_path=self.rollbacks_path
             )
             df_rollbacks["End date"] = pd.to_datetime(df_rollbacks["End date"])
+            df_rollbacks["Start date"] = pd.to_datetime(df_rollbacks["Start date"])
+            active_rollbacks_mask = df_rollbacks["End date"] > self.start_dt
+            if self.rollbacks_exclude_start_date:
+                exclude_dt = pd.to_datetime(self.rollbacks_exclude_start_date)
+                active_rollbacks_mask &= df_rollbacks["Start date"] != exclude_dt
+                logger.info(
+                    "Excluding rollbacks with Start date = %s", exclude_dt.date(),
+                )
             active_rollbacks = df_rollbacks[
-                df_rollbacks["End date"] > self.start_dt
+                active_rollbacks_mask
             ]["Product Code"].unique()
             before = len(top_skus)
             top_skus -= set(active_rollbacks)
@@ -192,9 +202,26 @@ class AnalysisDataPrep:
         df_sales_agg["node"] = df_sales_agg["node"].astype(str)
 
         sku_nodes = df_sales_agg[["sku", "node"]].drop_duplicates()
-        logger.info("Unique SKU-Nodes with sales: %s", f"{len(sku_nodes):,}")
+        logger.info("Unique SKU-Nodes (all): %s", f"{len(sku_nodes):,}")
 
-        return df_sales_agg, sku_nodes
+        # Filter to SKU-node combos that had at least one sale
+        sku_node_totals = df_sales_agg.groupby(["sku", "node"])["qty_sold"].sum()
+        sku_nodes_with_sales = sku_node_totals[sku_node_totals > 0].reset_index()[
+            ["sku", "node"]
+        ]
+        removed = len(sku_nodes) - len(sku_nodes_with_sales)
+        logger.info(
+            "Removed %s SKU-Nodes with 0 sales; %s remaining",
+            f"{removed:,}", f"{len(sku_nodes_with_sales):,}",
+        )
+
+        # Filter sales_agg to only keep rows for active sku-nodes
+        keep_keys = set(zip(sku_nodes_with_sales["sku"], sku_nodes_with_sales["node"]))
+        df_sales_agg = df_sales_agg[
+            df_sales_agg.set_index(["sku", "node"]).index.isin(keep_keys)
+        ].copy()
+
+        return df_sales_agg, sku_nodes_with_sales
 
     # ------------------------------------------------------------------
     # Private: Scaffold (cell 14)

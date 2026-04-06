@@ -2,7 +2,7 @@
 
 # --- Data preparation ---
 data_prep:
-  analysis_days: 30
+  analysis_days: 90
   top_sku_pct: 0.90
   sku_sales_lookback_days: 60
   rolling_window: 7
