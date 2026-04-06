@@ -8,7 +8,9 @@ Update categories (in order of application):
 2. Brand margin test updates (from tracker)
 3. Low price updates (current_nlc_margin < 5.9%)
 4. High price updates (current_nlc_margin > 20.3%)
-5. New SKU-Nodes (not in current DSV)
+5. Price increase test updates (from tracker)
+6. DSVD shipping cost test updates (from tracker)
+7. New SKU-Nodes (not in current DSV)
 """
 
 import logging
@@ -310,6 +312,123 @@ class PricingRulesEngine:
         df_tracker["Final price category"] = "20%"
         df_tracker["Min units"] = df_tracker["Min units"].astype(int)
         df_tracker["Start date"] = self.today_str
+
+        return df_dsv, df_tracker
+
+    def get_price_increase_test_updates(self) -> tuple:
+        """Get updates for SKU-Nodes in the price increase test.
+
+        Logic (from live notebook cell 176):
+        - Sub-group "Increased" → use Final node level cost
+        - Else if current_nlc_margin < 6% → use Final node level cost
+        - Else → keep current_nlc_price
+
+        Returns:
+            (df_dsv, df_tracker) — DSV-format updates and tracker updates
+        """
+        df = self.df_output[
+            self.df_output["Final target"] == "Increase test"
+        ].copy()
+
+        if len(df) == 0:
+            logger.info("No price increase test SKU-Nodes found.")
+            return pd.DataFrame(), pd.DataFrame()
+
+        df["Price"] = np.where(
+            df["Sub-group"] == "Increased",
+            df["Final node level cost"],
+            np.where(
+                df["current_nlc_margin"] < 0.06,
+                df["Final node level cost"],
+                df["current_nlc_price"],
+            ),
+        )
+
+        df["Price change %"] = round(
+            (df["Price"] - df["current_nlc_price"]) / df["current_nlc_price"], 4
+        )
+        df["Price change category"] = np.where(
+            df["Price change %"] < 0,
+            "Decrease",
+            np.where(df["Price change %"] > 0, "Increase", "No change"),
+        )
+
+        # Only update where |delta| >= 1%
+        df_update = df[abs(df["Price change %"]) >= self.min_price_change_pct].copy()
+
+        logger.info("Price increase test updates: %d SKU-Nodes", len(df_update))
+
+        # DSV format
+        df_dsv = df_update[
+            ["Product Code", "Identifier", "Price", "SKU-Node"]
+        ].rename(columns={"Product Code": "SKU", "Identifier": "Source"})
+
+        # Tracker format
+        df_tracker = df_update[["SKU-Node"]].merge(
+            self.df_current_tests, on="SKU-Node", how="left"
+        )
+        df_tracker["Last price update"] = self.today_str
+
+        return df_dsv, df_tracker
+
+    def get_dsvd_test_updates(self, df_dsvd_test: pd.DataFrame) -> tuple:
+        """Get updates for SKU-Nodes in the DSVD shipping cost test.
+
+        Logic (from live notebook cells 180-183):
+        - Sub-group "No shipping" → Final node level cost
+        - Sub-group "Shipping cost added" → Final node level cost + Shipping cost DSVD
+        - Otherwise → current_nlc_price
+
+        Args:
+            df_dsvd_test: DataFrame with columns [Identifier, Shipping cost DSVD]
+
+        Returns:
+            (df_dsv, df_tracker) — DSV-format updates and tracker updates
+        """
+        df = self.df_output[
+            self.df_output["Final target"] == "DSVD test"
+        ].copy()
+
+        if len(df) == 0:
+            logger.info("No DSVD test SKU-Nodes found.")
+            return pd.DataFrame(), pd.DataFrame()
+
+        df = df.merge(df_dsvd_test, how="left", on="Identifier")
+
+        df["Price"] = np.where(
+            df["Sub-group"] == "No shipping",
+            df["Final node level cost"],
+            np.where(
+                df["Sub-group"] == "Shipping cost added",
+                df["Final node level cost"] + df["Shipping cost DSVD"],
+                df["current_nlc_price"],
+            ),
+        )
+
+        df["Price change %"] = round(
+            (df["Price"] - df["current_nlc_price"]) / df["current_nlc_price"], 4
+        )
+        df["Price change category"] = np.where(
+            df["Price change %"] < 0,
+            "Decrease",
+            np.where(df["Price change %"] > 0, "Increase", "No change"),
+        )
+
+        # Only update where |delta| >= 1%
+        df_update = df[abs(df["Price change %"]) >= self.min_price_change_pct].copy()
+
+        logger.info("DSVD test updates: %d SKU-Nodes", len(df_update))
+
+        # DSV format
+        df_dsv = df_update[
+            ["Product Code", "Identifier", "Price", "SKU-Node"]
+        ].rename(columns={"Product Code": "SKU", "Identifier": "Source"})
+
+        # Tracker format
+        df_tracker = df_update[["SKU-Node"]].merge(
+            self.df_current_tests, on="SKU-Node", how="left"
+        )
+        df_tracker["Last price update"] = self.today_str
 
         return df_dsv, df_tracker
 

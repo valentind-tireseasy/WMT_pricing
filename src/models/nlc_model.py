@@ -188,9 +188,9 @@ class NLCModel:
             df_rollbacks_all = loader.load(
                 "rollbacks", rollbacks_path=rollbacks_path
             )
-            # Filter to active rollbacks (End date > today)
+            # Filter to active rollbacks (End date >= today)
             self.df_rollbacks = df_rollbacks_all[
-                df_rollbacks_all["End date"] > pd.to_datetime("today")
+                df_rollbacks_all["End date"] >= pd.to_datetime(self.date_str)
             ].copy()
             logger.info(
                 "Rollbacks loaded: %d active (from %d total)",

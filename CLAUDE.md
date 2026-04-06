@@ -63,7 +63,7 @@ Node Level Cost (NLC) pricing pipeline for a B2B tire company selling ~100K SKUs
 - DW `new_credentials=false` for `warehouse.*` schema queries
 - SKU-Node key: `{Product Code}-{Identifier}`
 - Brand code: first 4 chars of Product Code
-- Targets to exclude from regular updates: "Margin test", "Wm margin split test", "Shipping cost added"
+- Targets to exclude from regular updates: "Margin test", "Wm margin split test", "Shipping cost added", "DSVD test", "Increase test"
 - Original notebook in `original_code/` — reference only, do not modify
 
 ## Output files

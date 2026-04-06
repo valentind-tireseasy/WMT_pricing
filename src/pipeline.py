@@ -31,6 +31,20 @@ from src.notifications.slack_notifier import SlackNotifier
 logger = logging.getLogger(__name__)
 
 
+def _load_dsvd_test_data(dsvd_test_path: str) -> pd.DataFrame:
+    """Load DSVD test shipping costs from Excel.
+
+    Returns DataFrame with columns [Identifier, Shipping cost DSVD].
+    """
+    df = pd.read_excel(dsvd_test_path, dtype={"node": str})
+    df = df[df["Target"] == "Yes"].copy()
+    df = df.rename(columns={"node": "Identifier"})
+    df = df[["Identifier", "Average shipping overall last 30 days"]].copy()
+    df = df.rename(columns={"Average shipping overall last 30 days": "Shipping cost DSVD"})
+    logger.info("DSVD test data loaded: %d target nodes", len(df))
+    return df
+
+
 def run_pipeline(
     date_str: str = None,
     test: bool = False,
@@ -44,6 +58,7 @@ def run_pipeline(
     national_prices_path: str = None,
     national_prices_sheet: str = "National prices",
     national_prices_skip_rows: int = 2,
+    dsvd_test_path: str = None,
     slack_channel: str = "bot-test",
     slack_enabled: bool = True,
 ) -> dict:
@@ -67,6 +82,8 @@ def run_pipeline(
         national_prices_path: Path to the Excel file with new national prices.
         national_prices_sheet: Sheet name in the national prices Excel file.
         national_prices_skip_rows: Rows to skip in the national prices sheet.
+        dsvd_test_path: Path to the DSVD cost test Excel file. When provided,
+            enables DSVD test recurrent updates. When None, DSVD updates are skipped.
         slack_channel: Slack channel to post notifications to.
         slack_enabled: If False, skip all Slack notifications.
 
@@ -134,12 +151,23 @@ def run_pipeline(
         )
         df_low_dsv, df_low_tracker = engine.get_low_price_updates()
         df_high_dsv, df_high_tracker = engine.get_high_price_updates()
+        df_incr_dsv, df_incr_tracker = engine.get_price_increase_test_updates()
+
+        # DSVD test (optional — requires dsvd_test_path)
+        if dsvd_test_path:
+            df_dsvd_useful = _load_dsvd_test_data(dsvd_test_path)
+            df_dsvd_dsv, df_dsvd_tracker = engine.get_dsvd_test_updates(df_dsvd_useful)
+        else:
+            df_dsvd_dsv, df_dsvd_tracker = pd.DataFrame(), pd.DataFrame()
+
         df_new_dsv, df_new_tracker = engine.get_new_sku_nodes()
 
         logger.info("Rules complete.")
         slack.notify_pricing_rules({
             "Wm margin split": len(df_wm_split_dsv),
             "Margin test": len(df_margin_dsv),
+            "Price increase test": len(df_incr_dsv),
+            "DSVD test": len(df_dsvd_dsv),
             "Low price updates": len(df_low_dsv),
             "High price updates": len(df_high_dsv),
             "New SKU-Nodes": len(df_new_dsv),
@@ -182,7 +210,11 @@ def run_pipeline(
             logger.info("  [Skipped] Rollback handling")
             slack.notify_rollbacks(applied=False)
 
-        list_dsv_updates = [df_wm_split_dsv, df_margin_dsv, df_low_dsv, df_high_dsv]
+        list_dsv_updates = [
+            df_incr_dsv, df_dsvd_dsv,
+            df_wm_split_dsv, df_margin_dsv,
+            df_low_dsv, df_high_dsv,
+        ]
         df_new_dsv_final = builder.build_from(
             df_dsv_start,
             list_dsv_updates=list_dsv_updates,
@@ -214,6 +246,8 @@ def run_pipeline(
             df_high_tracker,
             df_wm_split_tracker,
             df_margin_tracker,
+            df_dsvd_tracker,
+            df_incr_tracker,
         ])
         slack.notify_tracker_update(len(updater.df_tracker))
 
@@ -234,6 +268,8 @@ def run_pipeline(
         logger.info("  New DSV rows:         %d", len(df_new_dsv_final))
         logger.info("  Wm margin split:      %d", len(df_wm_split_dsv))
         logger.info("  Margin test:          %d", len(df_margin_dsv))
+        logger.info("  Price increase test:  %d", len(df_incr_dsv))
+        logger.info("  DSVD test:            %d", len(df_dsvd_dsv))
         logger.info("  Low price updates:    %d", len(df_low_dsv))
         logger.info("  High price updates:   %d", len(df_high_dsv))
         logger.info("  New SKU-Nodes:        %d", len(df_new_dsv))
@@ -249,6 +285,8 @@ def run_pipeline(
             "dsv_rows": len(df_new_dsv_final),
             "wm_split": len(df_wm_split_dsv),
             "margin_test": len(df_margin_dsv),
+            "price_increase_test": len(df_incr_dsv),
+            "dsvd_test": len(df_dsvd_dsv),
             "low_price": len(df_low_dsv),
             "high_price": len(df_high_dsv),
             "new_nodes": len(df_new_dsv),

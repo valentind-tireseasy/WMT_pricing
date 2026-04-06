@@ -68,3 +68,5 @@ dont_update_targets:
   - "Margin test"
   - "Wm margin split test"
   - "Shipping cost added"
+  - "DSVD test"
+  - "Increase test"
