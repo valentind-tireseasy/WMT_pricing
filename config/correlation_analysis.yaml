@@ -71,6 +71,14 @@ elasticity:
   top_n_states: 15
   seasonal_n_periods: 3
 
+# --- Fixed-effects elasticity ---
+elasticity_fe:
+  price_col: "cost_to_walmart"
+  qty_col: "qty_sold"
+  entity_cols: ["sku", "node"]
+  min_obs_per_entity: 3
+  min_entities: 5
+
 # --- Difference-in-Differences ---
 did:
   treatment_col: "cost_to_walmart_vs_7d"

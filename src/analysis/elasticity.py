@@ -1,9 +1,12 @@
-"""Price elasticity estimation via log-log OLS.
+"""Price elasticity estimation via log-log OLS and fixed effects.
 
 Replaces five separate implementations from the original notebook
 (cells 59-61, 66-67, 69) with one generic ``estimate_elasticity()``
 function.  All variants (state, brand-state, city, seasonal, brand
 rankings) call the same core and differ only in ``groupby_cols``.
+
+Includes a fixed-effects estimator (``estimate_elasticity_fe``) that
+exploits within-SKU-node price variation from historical DSV snapshots.
 
 Uses ``src.analysis.ci_utils`` for analytical CIs and
 ``src.analysis.plot_utils`` for CI-aware visualisations.
@@ -395,6 +398,7 @@ def plot_elasticity_heatmap(
     row_col: str,
     col_col: str,
     title: str = "",
+    print_detail_table: bool = False,
 ) -> plt.Figure:
     """Pivot elasticity results into a heatmap with CI annotations.
 
@@ -407,6 +411,9 @@ def plot_elasticity_heatmap(
         Columns to use as heatmap rows and columns.
     title : str
         Plot title.
+    print_detail_table : bool
+        When *True*, the heatmap shows only central values and a detailed
+        table with CI limits is printed below the plot.
 
     Returns
     -------
@@ -433,9 +440,21 @@ def plot_elasticity_heatmap(
         title=title,
         cmap="RdYlGn",
         center=0,
+        show_ci=not print_detail_table,
         ax=ax,
     )
     fig.tight_layout()
+
+    if print_detail_table:
+        detail = (
+            df_elast[[row_col, col_col, "elasticity", "ci_lower", "ci_upper"]]
+            .sort_values([row_col, col_col])
+            .reset_index(drop=True)
+        )
+        detail.columns = [row_col, col_col, "Elasticity", "CI Lower", "CI Upper"]
+        print(f"\n{title} — Detail Table")
+        print(detail.to_string(index=False, float_format="%.3f"))
+
     return fig
 
 
@@ -529,5 +548,316 @@ def plot_seasonal_elasticity(
         print("\nBrands with largest seasonal elasticity shift:")
         for brand, shift in seasonal_range.head(5).items():
             print(f"  {brand}: {shift:.3f}")
+
+    return fig
+
+
+# ---------------------------------------------------------------------------
+# Fixed-effects panel elasticity
+# ---------------------------------------------------------------------------
+
+def diagnose_fe_feasibility(
+    df: pd.DataFrame,
+    entity_cols: list[str] = ("sku", "node"),
+    price_col: str = "cost_to_walmart",
+    qty_col: str = "qty_sold",
+) -> dict:
+    """Check whether within-entity price variation supports FE estimation.
+
+    Parameters
+    ----------
+    df : DataFrame
+        Full panel (including zero-sales rows).
+    entity_cols : list[str]
+        Columns defining the panel entity (default ``["sku", "node"]``).
+    price_col : str
+        Time-varying price column (from DSV snapshots).
+    qty_col : str
+        Quantity column.
+
+    Returns
+    -------
+    dict with diagnostic statistics printed to stdout.
+    """
+    data = df.dropna(subset=[price_col]).copy()
+    data["_entity"] = data[list(entity_cols)].astype(str).agg("-".join, axis=1)
+
+    total_entities = data["_entity"].nunique()
+
+    # Within-entity price variation
+    entity_stats = data.groupby("_entity")[price_col].agg(["std", "nunique", "count"])
+    entities_with_variation = (entity_stats["std"] > 0).sum()
+    entities_multi_price = (entity_stats["nunique"] > 1).sum()
+
+    # Sales days per entity
+    sales_data = data[data[qty_col] > 0]
+    sales_per_entity = sales_data.groupby("_entity").size()
+
+    # Entities with both price variation AND sales
+    entities_with_var_set = set(entity_stats[entity_stats["std"] > 0].index)
+    entities_with_sales = set(sales_per_entity[sales_per_entity >= 2].index)
+    usable_entities = entities_with_var_set & entities_with_sales
+
+    stats = {
+        "total_entities": total_entities,
+        "entities_with_price_variation": entities_with_variation,
+        "entities_multiple_prices": int(entities_multi_price),
+        "pct_with_variation": entities_with_variation / max(total_entities, 1) * 100,
+        "entities_with_2plus_sales_days": len(entities_with_sales),
+        "usable_entities_for_fe": len(usable_entities),
+        "median_sales_days_per_entity": float(sales_per_entity.median()) if len(sales_per_entity) > 0 else 0,
+        "median_unique_prices_per_entity": float(entity_stats["nunique"].median()),
+        "total_rows": len(data),
+        "rows_with_sales": len(sales_data),
+    }
+
+    print("=== Fixed-Effects Feasibility Diagnostic ===")
+    print(f"  Total entities ({', '.join(entity_cols)}): {stats['total_entities']:,}")
+    print(f"  Entities with price variation:  {stats['entities_with_price_variation']:,} "
+          f"({stats['pct_with_variation']:.1f}%)")
+    print(f"  Entities with multiple prices:  {stats['entities_multiple_prices']:,}")
+    print(f"  Entities with 2+ sales days:    {stats['entities_with_2plus_sales_days']:,}")
+    print(f"  Usable for FE (variation+sales): {stats['usable_entities_for_fe']:,}")
+    print(f"  Median sales days per entity:   {stats['median_sales_days_per_entity']:.0f}")
+    print(f"  Median unique prices per entity: {stats['median_unique_prices_per_entity']:.0f}")
+    print(f"  Total rows: {stats['total_rows']:,}  |  Rows with sales: {stats['rows_with_sales']:,}")
+
+    return stats
+
+
+def estimate_elasticity_fe(
+    df: pd.DataFrame,
+    entity_cols: list[str] = ("sku", "node"),
+    groupby_cols: list[str] | None = None,
+    price_col: str = "cost_to_walmart",
+    qty_col: str = "qty_sold",
+    min_obs_per_entity: int = 3,
+    min_entities: int = 5,
+    ci_level: float = 0.95,
+) -> pd.DataFrame:
+    """Fixed-effects elasticity using within-entity price variation.
+
+    Uses the within (demeaning) estimator: for each entity *i*, subtract
+    the entity mean from ``log(price)`` and ``log1p(qty)``, then pool and
+    run OLS (no constant).  The slope is the within-entity elasticity.
+
+    Parameters
+    ----------
+    df : DataFrame
+        Must contain *entity_cols*, *price_col*, *qty_col*, and optionally
+        columns in *groupby_cols* for group-level reporting.
+    entity_cols : list[str]
+        Columns defining the panel entity (default ``["sku", "node"]``).
+    groupby_cols : list[str] or None
+        Columns to report results by (e.g. ``["brand"]``).
+        If ``None``, returns a single overall estimate.
+    price_col : str
+        Time-varying price column (``cost_to_walmart`` from DSV history).
+    qty_col : str
+        Quantity sold column.
+    min_obs_per_entity : int
+        Minimum sales-day observations per entity to include it.
+    min_entities : int
+        Minimum usable entities per reporting group.
+    ci_level : float
+        Confidence level for the coefficient interval.
+
+    Returns
+    -------
+    DataFrame with columns
+        ``[*groupby_cols, elasticity_fe, se, ci_lower, ci_upper, p_value,
+        n_entities, n_obs, r_squared_within]``
+    """
+    # Filter to positive sales and valid prices
+    mask = (df[qty_col] > 0) & (df[price_col] > 0)
+    data = df.loc[mask].copy()
+
+    data["_entity"] = data[list(entity_cols)].astype(str).agg("-".join, axis=1)
+    data["_log_price"] = np.log(data[price_col])
+    data["_log_qty"] = np.log1p(data[qty_col])
+
+    # Keep only entities with price variation AND enough observations
+    entity_stats = data.groupby("_entity").agg(
+        _price_std=("_log_price", "std"),
+        _n_obs=("_log_price", "size"),
+    )
+    usable = entity_stats[
+        (entity_stats["_price_std"] > 0) & (entity_stats["_n_obs"] >= min_obs_per_entity)
+    ].index
+    data = data[data["_entity"].isin(usable)].copy()
+
+    if len(data) == 0:
+        cols = (list(groupby_cols) if groupby_cols else []) + [
+            "elasticity_fe", "se", "ci_lower", "ci_upper",
+            "p_value", "n_entities", "n_obs", "r_squared_within",
+        ]
+        return pd.DataFrame(columns=cols)
+
+    # Demean within entity
+    entity_means = data.groupby("_entity")[["_log_price", "_log_qty"]].transform("mean")
+    data["_dm_price"] = data["_log_price"] - entity_means["_log_price"]
+    data["_dm_qty"] = data["_log_qty"] - entity_means["_log_qty"]
+
+    z = sp_stats.norm.ppf(1 - (1 - ci_level) / 2)
+
+    def _fe_ols(grp):
+        """Run demeaned OLS (no constant) on a group."""
+        y = grp["_dm_qty"].values
+        X = grp["_dm_price"].values.reshape(-1, 1)
+        n_ent = grp["_entity"].nunique()
+
+        if n_ent < min_entities or len(grp) < min_entities * 2:
+            return None
+
+        try:
+            model = sm.OLS(y, X).fit()
+        except Exception:
+            return None
+
+        coef = model.params[0]
+        se = model.bse[0]
+        # Adjust SE for entity-level clustering (Moulton factor approximation)
+        avg_cluster_size = len(grp) / n_ent
+        if avg_cluster_size > 1:
+            resid_by_entity = grp.copy()
+            resid_by_entity["_resid"] = model.resid
+            rho = resid_by_entity.groupby("_entity")["_resid"].apply(
+                lambda r: r.autocorr() if len(r) > 1 else 0
+            ).mean()
+            rho = max(rho, 0)
+            moulton = np.sqrt(1 + rho * (avg_cluster_size - 1))
+            se_adj = se * moulton
+        else:
+            se_adj = se
+
+        return {
+            "elasticity_fe": coef,
+            "se": se_adj,
+            "ci_lower": coef - z * se_adj,
+            "ci_upper": coef + z * se_adj,
+            "p_value": 2 * (1 - sp_stats.norm.cdf(abs(coef / se_adj))),
+            "n_entities": n_ent,
+            "n_obs": len(grp),
+            "r_squared_within": float(model.rsquared),
+        }
+
+    records = []
+    if groupby_cols:
+        for group_key, grp in data.groupby(groupby_cols, dropna=False):
+            if not isinstance(group_key, tuple):
+                group_key = (group_key,)
+            if any(pd.isna(k) for k in group_key):
+                continue
+            result = _fe_ols(grp)
+            if result is None:
+                continue
+            row = dict(zip(groupby_cols, group_key))
+            row.update(result)
+            records.append(row)
+    else:
+        result = _fe_ols(data)
+        if result is not None:
+            records.append(result)
+
+    cols = (list(groupby_cols) if groupby_cols else []) + [
+        "elasticity_fe", "se", "ci_lower", "ci_upper",
+        "p_value", "n_entities", "n_obs", "r_squared_within",
+    ]
+    if not records:
+        return pd.DataFrame(columns=cols)
+    return pd.DataFrame(records, columns=cols)
+
+
+def plot_fe_vs_ols_comparison(
+    df_ols: pd.DataFrame,
+    df_fe: pd.DataFrame,
+    groupby_col: str,
+    title: str = "OLS vs Fixed-Effects Elasticity Comparison",
+) -> plt.Figure:
+    """Scatter plot comparing OLS (cross-sectional) vs FE (within) elasticity.
+
+    Parameters
+    ----------
+    df_ols : DataFrame
+        Output of ``estimate_elasticity`` with ``elasticity`` column.
+    df_fe : DataFrame
+        Output of ``estimate_elasticity_fe`` with ``elasticity_fe`` column.
+    groupby_col : str
+        Column to join on (e.g. ``"brand"``).
+    title : str
+        Plot title.
+
+    Returns
+    -------
+    matplotlib Figure
+    """
+    merged = df_ols[[groupby_col, "elasticity", "ci_lower", "ci_upper"]].merge(
+        df_fe[[groupby_col, "elasticity_fe", "ci_lower", "ci_upper"]],
+        on=groupby_col,
+        suffixes=("_ols", "_fe"),
+    )
+
+    if merged.empty:
+        fig, ax = plt.subplots(figsize=(8, 6))
+        ax.text(0.5, 0.5, "No overlapping groups for comparison",
+                ha="center", va="center", transform=ax.transAxes)
+        return fig
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 7))
+
+    # --- Left: scatter comparison ---
+    ax1.errorbar(
+        merged["elasticity"], merged["elasticity_fe"],
+        xerr=[merged["elasticity"] - merged["ci_lower_ols"],
+              merged["ci_upper_ols"] - merged["elasticity"]],
+        yerr=[merged["elasticity_fe"] - merged["ci_lower_fe"],
+              merged["ci_upper_fe"] - merged["elasticity_fe"]],
+        fmt="o", alpha=0.6, markersize=5, elinewidth=0.8, capsize=2,
+    )
+    lims = [
+        min(merged["elasticity"].min(), merged["elasticity_fe"].min()) - 0.3,
+        max(merged["elasticity"].max(), merged["elasticity_fe"].max()) + 0.3,
+    ]
+    ax1.plot(lims, lims, "--", color="gray", alpha=0.5, label="45° line")
+    ax1.set_xlabel("OLS Elasticity (cross-sectional)")
+    ax1.set_ylabel("FE Elasticity (within SKU-node)")
+    ax1.set_title("OLS vs Fixed-Effects")
+    ax1.legend()
+
+    for _, row in merged.iterrows():
+        ax1.annotate(
+            row[groupby_col], (row["elasticity"], row["elasticity_fe"]),
+            fontsize=6, alpha=0.7,
+            xytext=(3, 3), textcoords="offset points",
+        )
+
+    # --- Right: paired bar chart of top differences ---
+    merged["diff"] = merged["elasticity_fe"] - merged["elasticity"]
+    merged["abs_diff"] = merged["diff"].abs()
+    top_diff = merged.nlargest(min(15, len(merged)), "abs_diff").sort_values("diff")
+
+    y_pos = range(len(top_diff))
+    ax2.barh(y_pos, top_diff["elasticity"], height=0.35, label="OLS",
+             color="steelblue", alpha=0.7)
+    ax2.barh([y + 0.35 for y in y_pos], top_diff["elasticity_fe"], height=0.35,
+             label="FE", color="coral", alpha=0.7)
+    ax2.set_yticks([y + 0.175 for y in y_pos])
+    ax2.set_yticklabels(top_diff[groupby_col], fontsize=8)
+    ax2.set_xlabel("Elasticity")
+    ax2.set_title("Largest OLS vs FE Differences")
+    ax2.legend()
+    ax2.axvline(0, color="gray", linewidth=0.5)
+
+    fig.suptitle(title, fontsize=14, y=1.02)
+    fig.tight_layout()
+
+    # Print summary stats
+    corr = merged["elasticity"].corr(merged["elasticity_fe"])
+    mean_diff = merged["diff"].mean()
+    print(f"\nOLS vs FE comparison ({len(merged)} groups):")
+    print(f"  Correlation: {corr:.3f}")
+    print(f"  Mean difference (FE - OLS): {mean_diff:.3f}")
+    print(f"  FE more negative (demand more elastic) in "
+          f"{(merged['diff'] < 0).sum()}/{len(merged)} groups")
 
     return fig

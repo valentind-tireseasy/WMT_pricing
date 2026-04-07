@@ -219,9 +219,14 @@ def heatmap_with_ci_annotation(
     cmap: str = "RdYlGn",
     center: float = 0,
     fmt: str = ".2f",
+    show_ci: bool = True,
     ax=None,
 ) -> plt.Axes:
-    """Heatmap where each cell shows ``value [lo, hi]`` when CIs are given."""
+    """Heatmap where each cell shows ``value [lo, hi]`` when CIs are given.
+
+    Set *show_ci=False* to display only the central value in each cell
+    (useful for large heatmaps where the CI text makes cells unreadable).
+    """
     if ax is None:
         _, ax = plt.subplots(figsize=(16, max(6, len(values) * 0.5)))
 
@@ -234,15 +239,16 @@ def heatmap_with_ci_annotation(
                 lo = ci_lower.loc[r, c] if r in ci_lower.index and c in ci_lower.columns else np.nan
                 hi = ci_upper.loc[r, c] if r in ci_upper.index and c in ci_upper.columns else np.nan
                 if pd.notna(v):
-                    if pd.notna(lo) and pd.notna(hi):
+                    if show_ci and pd.notna(lo) and pd.notna(hi):
                         annot.loc[r, c] = f"{v:{fmt[1:]}}\n[{lo:{fmt[1:]}},{hi:{fmt[1:]}}]"
                     else:
                         annot.loc[r, c] = f"{v:{fmt[1:]}}"
                 else:
                     annot.loc[r, c] = ""
+        annot_size = 7 if show_ci else 8
         sns.heatmap(values, annot=annot, fmt="", cmap=cmap, center=center,
                     linewidths=0.5, ax=ax, cbar_kws={"label": "Value"},
-                    annot_kws={"size": 7})
+                    annot_kws={"size": annot_size})
     else:
         sns.heatmap(values, annot=True, fmt=fmt, cmap=cmap, center=center,
                     linewidths=0.5, ax=ax, cbar_kws={"label": "Value"})
