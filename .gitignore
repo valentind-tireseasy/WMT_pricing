@@ -5,3 +5,4 @@ outputs/
 *.egg-info/
 .ipynb_checkpoints/
 last_run.txt
+.claude/

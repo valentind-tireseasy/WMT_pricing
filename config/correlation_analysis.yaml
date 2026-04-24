@@ -146,3 +146,41 @@ output:
   format: "parquet"
   fallback_format: "csv"
   filename_template: "correlation_dataset_{end_date}"
+
+# --- Change-based analysis (notebooks/change_based_analysis.ipynb) ---
+change_based:
+  change_cols:
+    - cost_to_walmart_vs_7d_pct
+    - te_margin_vs_7d_pct
+    - walmart_margin_vs_7d_pct
+  outcome_cols:
+    - qty_sold
+    - revenue
+  controls:
+    - can_show_inv
+    - day_of_week
+    - n_active_nodes
+    - days_since_price_change
+  variants:
+    threshold_pct: 0.01            # V2: matches pipeline min_price_change_pct
+    directional_bins: [-1.0, -0.05, -0.01, 0.01, 0.05, 1.0]
+    directional_labels:
+      - "big_decrease (<-5%)"
+      - "small_decrease (-5..-1%)"
+      - "stable (-1..1%)"
+      - "small_increase (1..5%)"
+      - "big_increase (>5%)"
+  its:
+    top_n_sku_nodes: 20
+    min_events: 2
+    pre_window: 7
+    post_window: 14
+  did:
+    treatment_col: "cost_to_walmart_vs_7d_pct"
+    threshold: 0.01
+    top_treated: 300               # pre-subsample cap for panel build perf
+    n_controls: 600
+  min_obs_nb: 200
+  interactions:
+    - ["cost_to_walmart_vs_7d_pct", "te_margin_vs_7d_pct"]
+    - ["cost_to_walmart_vs_7d_pct", "walmart_margin_vs_7d_pct"]
